@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 3.9 is the minimum supported version; 3.13 is current.
+        python-version: ["3.9", "3.11", "3.13"]
+    steps:
+      # Pinned to major versions; switch to commit SHAs for stricter pinning
+      # if this repository adopts a hardening policy.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run checks
+        run: sh scripts/run_checks.sh
