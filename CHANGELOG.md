@@ -23,6 +23,12 @@ subcommands/flags, and the registry `schema_version` are unchanged.
 
 ### Changed
 
+- **Inventory ordering** is now deterministic across platforms: directory
+  traversal sorts entries, so the detected manifest/documentation/test lists
+  in `core.md` and `routing.md` no longer depend on filesystem enumeration
+  order (macOS and Linux previously produced different orders, which the CI
+  sample-output round-trip caught). The next `scaffold` run on an existing
+  repository may rewrite the managed blocks once to reorder those lists.
 - **Runtime detection** (`--agent auto`) now matches confirmed environment
   variables exactly instead of substring matching, with an explicit priority
   order (`DETECT_PRIORITY`) that preserves the historical multi-hit

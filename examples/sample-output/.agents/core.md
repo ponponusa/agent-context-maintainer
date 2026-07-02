@@ -13,10 +13,10 @@
 
 ## Detected Documentation
 
-- `README.md`
-- `GEMINI.md`
 - `AGENTS.md`
 - `CLAUDE.md`
+- `GEMINI.md`
+- `README.md`
 - `.github/copilot-instructions.md`
 
 ## Context Boundaries

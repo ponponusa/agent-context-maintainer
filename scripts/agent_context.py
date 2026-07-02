@@ -397,7 +397,7 @@ def scan_inventory(root: Path) -> InventoryScan:
 
     for current, dirs, file_names in os.walk(root):
         current_path = Path(current)
-        kept_dirs = []
+        kept_dirs: list[str] = []
         for dir_name in dirs:
             path = current_path / dir_name
             try:
@@ -411,8 +411,10 @@ def scan_inventory(root: Path) -> InventoryScan:
                 continue
             kept_dirs.append(dir_name)
             candidate_dirs.append(rel)
-        dirs[:] = kept_dirs
-        for file_name in file_names:
+        # os.walk yields entries in filesystem order, which differs across
+        # platforms; sort so generated lists are deterministic everywhere.
+        dirs[:] = sorted(kept_dirs)
+        for file_name in sorted(file_names):
             path = current_path / file_name
             try:
                 rel = path.relative_to(root)
