@@ -72,6 +72,9 @@ python3 scripts/agent_context.py inventory /path/to/repo
 python3 scripts/agent_context.py inventory /path/to/repo --json --explain-skips
 python3 scripts/agent_context.py scaffold /path/to/repo --agent auto
 python3 scripts/agent_context.py check /path/to/repo
+python3 scripts/agent_context.py skills inventory /path/to/repo --json
+python3 scripts/agent_context.py skills check /path/to/repo
+python3 scripts/agent_context.py skills sync /path/to/repo
 ```
 
 `providers` は、対応 provider・bridge ファイル・自動検出の可否を一覧表示します。`--agent codex`、`--agent claude`、`--agent gemini`、`--agent cursor`、`--agent copilot`、`--agent antigravity`、`--agent generic` を指定すると、対応するプロファイルを active profile として生成します。
@@ -83,6 +86,27 @@ python3 scripts/agent_context.py check /path/to/repo
 - `--dry-run`: ファイルを変更せず、予定される書き込みを表示します。
 - `--append-generated-block`: 既存の marker なし Markdown を維持し、managed block を追記します。
 - `--force-recreate`: generated marker のない scaffold 対象を明示的に置き換えます。
+
+## SkillOps
+
+ネストされた `skills` コマンド群は、`.agents/skills/` 以下の repository-local Agent Skills を監査・保守します。
+
+```bash
+python3 scripts/agent_context.py skills inventory /path/to/repo
+python3 scripts/agent_context.py skills inventory /path/to/repo --json
+python3 scripts/agent_context.py skills check /path/to/repo
+python3 scripts/agent_context.py skills report /path/to/repo
+python3 scripts/agent_context.py skills sync /path/to/repo
+python3 scripts/agent_context.py skills routes /path/to/repo
+python3 scripts/agent_context.py skills eval /path/to/repo --skill code-review --plan
+python3 scripts/agent_context.py skills eval /path/to/repo --skill code-review --init-workspace
+```
+
+`skills inventory` は `ROOT/.agents/skills/` 直下の skill directory だけを列挙し、それぞれの中にある `SKILL.md` を検証します。依存ゼロの安全な frontmatter サブセットを parse し、Agent Skills の必須フィールド、安全な local reference、存在する場合は `evals/evals.json` を検証します。symlink された skill directory は追跡せず warning として報告します。eval 不在は warning のみで、valid skill の既定 lifecycle は `active` です。
+
+`skills sync` は `.agents/skill-registry.yaml` と `.agents/skill-reports/skill-health.md` を deterministic な generated marker 付きファイルとして書きます。marker 外の手書き内容は維持し、marker のない既存ファイルはデフォルトで拒否します。`skills routes` は active/watch skill への短い route を `.agents/routing.md` に追加し、skill body はコピーしません。`skills eval --init-workspace` は `.agents/skill-workspaces/` に local planning workspace を作ります。`--runner codex` と prompt/output path を明示しない限り Codex は実行しません。
+
+Codex eval execution は `codex exec --json --sandbox ...` を使い、JSONL trace output は `.agents/skill-workspaces/` 以下にだけ保存します。通常は `--sandbox read-only` または `--sandbox workspace-write` を使ってください。`--sandbox danger-full-access` は追加で `--i-understand-danger` が必要で、隔離された CI/container 環境でのみ適しています。`--full-auto` は deprecated legacy alias であり、新しい automation では使わないでください。
 
 ## 安全性
 

@@ -50,6 +50,10 @@ GEMINI.md
 .agents/core.md
 .agents/routing.md
 .agents/provider-registry.yaml
+.agents/skill-registry.yaml
+.agents/skill-reports/skill-health.md
+.agents/skill-overrides.json
+.agents/skill-workspaces/
 .agents/profiles/codex.md
 .agents/profiles/claude.md
 .agents/profiles/gemini.md
@@ -85,6 +89,12 @@ Current scaffold behavior is marker-first for Markdown/YAML targets. Existing cl
 - `scaffold ROOT --agent AGENT`: create or refresh context files.
 - `scaffold ROOT --dry-run`: preview planned writes.
 - `check ROOT`: verify the minimum context structure and references.
+- `skills inventory ROOT [--json]`: scan direct child skills under `.agents/skills`.
+- `skills check ROOT`: validate skill frontmatter, references, and eval manifests.
+- `skills report ROOT`: print the deterministic skill health report.
+- `skills sync ROOT`: write `.agents/skill-registry.yaml` and `.agents/skill-reports/skill-health.md`.
+- `skills routes ROOT`: sync compact skill routes into `.agents/routing.md`.
+- `skills eval ROOT --plan|--init-workspace`: plan or create repository-local eval workspaces.
 
 Important internal extension points:
 
@@ -97,6 +107,7 @@ Important internal extension points:
 - `LANG_EXTS`: language signal detection.
 - `*_body()` functions: generated Markdown templates.
 - `check()`: validation rules. Bridge-specific verification (which strings each bridge file must contain) stays as explicit logic; only "which files and profiles must exist" derives from `PROVIDERS`.
+- SkillOps helpers: `skill_inventory()`, `parse_skill_frontmatter()`, `validate_eval_manifest()`, `skills_sync()`, `sync_skill_routes()`, and `init_skill_workspace()` keep skill auditing dependency-free and do not follow symlink targets.
 - `claude_body()`: Claude Code wrapper that imports `AGENTS.md`.
 - `classify_recreate()` and `apply_planned_writes()`: marker-first update planning and writes.
 - `detect_agent()`: returns `(agent, matched_variable)`; exact-match detection only, never substring matching.

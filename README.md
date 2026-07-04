@@ -72,6 +72,9 @@ python3 scripts/agent_context.py inventory /path/to/repo
 python3 scripts/agent_context.py inventory /path/to/repo --json --explain-skips
 python3 scripts/agent_context.py scaffold /path/to/repo --agent auto
 python3 scripts/agent_context.py check /path/to/repo
+python3 scripts/agent_context.py skills inventory /path/to/repo --json
+python3 scripts/agent_context.py skills check /path/to/repo
+python3 scripts/agent_context.py skills sync /path/to/repo
 ```
 
 `providers` lists supported providers, their bridge files, and whether they can be auto-detected. Use `--agent codex`, `--agent claude`, `--agent gemini`, `--agent cursor`, `--agent copilot`, `--agent antigravity`, or `--agent generic` to generate a different active profile.
@@ -83,6 +86,27 @@ python3 scripts/agent_context.py check /path/to/repo
 - `--dry-run`: show planned writes without changing files.
 - `--append-generated-block`: preserve an existing unmarked Markdown file and append a managed block.
 - `--force-recreate`: explicitly replace an existing scaffold target that has no generated marker.
+
+## SkillOps
+
+The nested `skills` command group audits and maintains repository-local Agent Skills under `.agents/skills/`.
+
+```bash
+python3 scripts/agent_context.py skills inventory /path/to/repo
+python3 scripts/agent_context.py skills inventory /path/to/repo --json
+python3 scripts/agent_context.py skills check /path/to/repo
+python3 scripts/agent_context.py skills report /path/to/repo
+python3 scripts/agent_context.py skills sync /path/to/repo
+python3 scripts/agent_context.py skills routes /path/to/repo
+python3 scripts/agent_context.py skills eval /path/to/repo --skill code-review --plan
+python3 scripts/agent_context.py skills eval /path/to/repo --skill code-review --init-workspace
+```
+
+`skills inventory` scans only direct child directories under `ROOT/.agents/skills/`, then validates the `SKILL.md` inside each one. It parses a safe dependency-free frontmatter subset, validates required Agent Skills fields, checks safe local references, validates `evals/evals.json` when present, and reports symlinked skill directories without following them. Missing evals are warnings only; valid skills default to `active`.
+
+`skills sync` writes `.agents/skill-registry.yaml` and `.agents/skill-reports/skill-health.md` with deterministic content and generated markers. It preserves human content outside managed blocks and refuses unmarked files by default. `skills routes` adds compact active/watch skill routes to `.agents/routing.md` without copying skill bodies. `skills eval --init-workspace` creates local planning workspaces under `.agents/skill-workspaces/`; it does not run Codex unless `--runner codex` is explicitly provided with a prompt and output path.
+
+Codex eval execution uses `codex exec --json --sandbox ...` and writes JSONL trace output only under `.agents/skill-workspaces/`. Prefer `--sandbox read-only` or `--sandbox workspace-write`. `--sandbox danger-full-access` also requires `--i-understand-danger` and is suitable only for isolated CI/container environments. `--full-auto` is a deprecated legacy alias and should not be used for new automation.
 
 ## Safety
 

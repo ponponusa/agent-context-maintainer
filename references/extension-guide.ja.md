@@ -50,6 +50,10 @@ GEMINI.md
 .agents/core.md
 .agents/routing.md
 .agents/provider-registry.yaml
+.agents/skill-registry.yaml
+.agents/skill-reports/skill-health.md
+.agents/skill-overrides.json
+.agents/skill-workspaces/
 .agents/profiles/codex.md
 .agents/profiles/claude.md
 .agents/profiles/gemini.md
@@ -78,13 +82,19 @@ GEMINI.md
 
 ## Script Architecture
 
-`scripts/agent_context.py` には 3 つの public command があります。
+`scripts/agent_context.py` には次の public command があります。
 
 - `inventory ROOT`: 安全な repository summary を出力する。
 - `inventory ROOT --json --explain-skips`: bounded skip reasons を含む structured inventory を出力する。
 - `scaffold ROOT --agent AGENT`: context files を作成または更新する。
 - `scaffold ROOT --dry-run`: planned writes を preview する。
 - `check ROOT`: 最小 context structure と references を検証する。
+- `skills inventory ROOT [--json]`: `.agents/skills` 直下の skill を scan する。
+- `skills check ROOT`: skill frontmatter、references、eval manifests を検証する。
+- `skills report ROOT`: deterministic な skill health report を出力する。
+- `skills sync ROOT`: `.agents/skill-registry.yaml` と `.agents/skill-reports/skill-health.md` を書く。
+- `skills routes ROOT`: compact skill routes を `.agents/routing.md` に同期する。
+- `skills eval ROOT --plan|--init-workspace`: repository-local eval workspace を計画または作成する。
 
 主な extension point:
 
@@ -97,6 +107,7 @@ GEMINI.md
 - `LANG_EXTS`: language signal detection。
 - `*_body()` functions: 生成 Markdown template。
 - `check()`: validation rules。bridge ごとの検証内容(各 bridge file が含むべき文字列)は明示的なロジックとして残し、`PROVIDERS` から導出するのは「どのファイル・profile が存在すべきか」だけです。
+- SkillOps helpers: `skill_inventory()`、`parse_skill_frontmatter()`、`validate_eval_manifest()`、`skills_sync()`、`sync_skill_routes()`、`init_skill_workspace()` は skill audit を dependency-free に保ち、symlink target を追跡しません。
 - `claude_body()`: `AGENTS.md` を import する Claude Code wrapper。
 - `classify_recreate()` と `apply_planned_writes()`: marker-first update planning と書き込み。
 - `detect_agent()`: `(agent, matched_variable)` を返します。完全一致検出のみで、部分文字列マッチは使いません。

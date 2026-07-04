@@ -10,6 +10,18 @@ subcommands/flags, and the registry `schema_version` are unchanged.
 
 - `providers` subcommand (text and `--json`) listing supported providers,
   bridge files, and auto-detection status.
+- `skills` command group for SkillOps:
+  - `skills inventory ROOT [--json]` scans direct child skills under
+    `.agents/skills`.
+  - `skills check ROOT` validates Agent Skills frontmatter, local references,
+    and optional `evals/evals.json` manifests.
+  - `skills report ROOT` and `skills sync ROOT` produce deterministic skill
+    registry and health report files.
+  - `skills routes ROOT` syncs compact active/watch skill routes into
+    `.agents/routing.md`.
+  - `skills eval ROOT --plan|--init-workspace` creates repository-local eval
+    planning workspaces, and `--runner codex` can run an explicit prompt with
+    explicit sandbox flags.
 - `PROVIDERS` registry in `scripts/agent_context.py` as the single source of
   truth for provider knowledge; `PROFILES`, the generated provider registry,
   profile bodies, and detection all derive from it.
