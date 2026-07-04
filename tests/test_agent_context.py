@@ -685,6 +685,24 @@ class AgentContextTests(unittest.TestCase):
             self.assertIn("schema_version must be 1", messages)
             self.assertIn("expected_output must be a string", messages)
 
+    def test_eval_manifest_rejects_non_string_kind_without_crashing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_skill(
+                root,
+                evals={
+                    "schema_version": 1,
+                    "skill_name": "code-review",
+                    "evals": [
+                        {"id": "case", "kind": ["trigger"], "prompt": "x", "expected_output": "x"},
+                    ],
+                },
+            )
+
+            _warnings, errors = agent_context.skill_inventory_diagnostics(agent_context.skill_inventory(root))
+
+            self.assertIn("invalid kind", "\n".join(item.message for item in errors))
+
     def test_symlink_skill_directory_is_warning_not_followed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -803,6 +821,36 @@ class AgentContextTests(unittest.TestCase):
             _warnings, errors = agent_context.skill_inventory_diagnostics(agent_context.skill_inventory(root))
 
             self.assertIn("unsafe-local-reference", {item.code for item in errors})
+
+    def test_unsafe_reference_diagnostic_path_is_repo_relative(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_skill(root, body="# Skill\n\nRead [secret](/etc/passwd) and [parent](../secret.md).\n")
+
+            _warnings, errors = agent_context.skill_inventory_diagnostics(agent_context.skill_inventory(root))
+            unsafe_paths = [item.path for item in errors if item.code == "unsafe-local-reference"]
+
+            self.assertEqual(unsafe_paths, [".agents/skills/code-review/SKILL.md", ".agents/skills/code-review/SKILL.md"])
+            self.assertTrue(all(not path.startswith("/") for path in unsafe_paths))
+
+    def test_unsafe_eval_input_diagnostic_path_is_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_skill(
+                root,
+                evals={
+                    "schema_version": 1,
+                    "skill_name": "code-review",
+                    "evals": [
+                        {"id": "case", "kind": "outcome", "prompt": "x", "expected_output": "x", "input_files": ["/etc/passwd", "../secret.md"]},
+                    ],
+                },
+            )
+
+            _warnings, errors = agent_context.skill_inventory_diagnostics(agent_context.skill_inventory(root))
+            unsafe_paths = [item.path for item in errors if item.code == "unsafe-eval-input-file"]
+
+            self.assertEqual(unsafe_paths, [".agents/skills/code-review/evals/evals.json", ".agents/skills/code-review/evals/evals.json"])
 
     def test_skills_inventory_json_cli_and_check_exit_one(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -931,6 +979,21 @@ class AgentContextTests(unittest.TestCase):
 
             with self.assertRaisesRegex(agent_context.AgentContextError, "inventory errors"):
                 agent_context.skill_routes_body(root)
+
+    def test_invalid_lifecycle_override_values_are_errors(self) -> None:
+        for lifecycle in (None, []):
+            with self.subTest(lifecycle=lifecycle):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    self._write_skill(root)
+                    (root / ".agents" / "skill-overrides.json").write_text(
+                        json.dumps({"code-review": {"lifecycle": lifecycle}}),
+                        encoding="utf-8",
+                    )
+
+                    _warnings, errors = agent_context.skill_inventory_diagnostics(agent_context.skill_inventory(root))
+
+                    self.assertIn("invalid-skill-overrides", {item.code for item in errors})
 
     def test_codex_runner_command_and_danger_flag(self) -> None:
         self.assertEqual(

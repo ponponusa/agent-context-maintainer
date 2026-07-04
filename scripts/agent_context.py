@@ -230,13 +230,15 @@ LANG_EXTS = {
 AGENTS_REF_RE = re.compile(r"`(\.agents/[^`\s)]+)`")
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 PROVIDER_REGISTRY_REVIEWED = "2026-07-02"  # update together with reports/provider-review-*.md
-SKILL_NAME_RE = re.compile(r"^(?!.*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+MAX_SKILL_NAME_CHARS = 64
+SKILL_NAME_RE = re.compile(
+    rf"^(?!.*--)[a-z0-9](?:[a-z0-9-]{{0,{MAX_SKILL_NAME_CHARS - 2}}}[a-z0-9])?$"
+)
 SKILL_FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n?", re.DOTALL)
 MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 BACKTICK_LOCAL_PATH_RE = re.compile(r"`((?:scripts|references|assets|evals)/[^`]+)`")
 NEGATION_RE = re.compile(r"\b(do not|don't|never|avoid|must not|should not)\b", re.I)
 RISK_RE = re.compile(r"\b(\.env|secret|secrets|token|tokens|credential|credentials|raw\s+logs?)\b", re.I)
-MAX_SKILL_NAME_CHARS = 64
 MAX_SKILL_DESCRIPTION_CHARS = 1024
 MAX_SKILL_COMPATIBILITY_CHARS = 500
 MAX_SKILL_MAIN_LINES = 500
@@ -772,12 +774,13 @@ def validate_local_reference(skill_root: Path, root_rel: Path, value: str) -> Li
     target_text = local_reference_target(value)
     if target_text is None:
         return []
+    diagnostic_path = root_rel / "SKILL.md"
     if target_text.startswith("file://"):
-        return [diag(root_rel, "unsafe-local-reference", f"unsafe local reference: {value}")]
+        return [diag(diagnostic_path, "unsafe-local-reference", f"unsafe local reference: {value}")]
     target = Path(target_text)
     rel_path = root_rel / target
     if target.is_absolute() or ".." in target.parts:
-        return [diag(rel_path, "unsafe-local-reference", f"unsafe local reference: {value}")]
+        return [diag(diagnostic_path, "unsafe-local-reference", f"unsafe local reference: {value}")]
     full = skill_root / target
     if has_symlink_component(skill_root, target):
         return [diag(rel_path, "unsafe-local-reference", f"reference crosses a symlink: {value}")]
@@ -806,12 +809,13 @@ def validate_local_references(skill_root: Path, root_rel: Path, text: str) -> Li
 
 
 def validate_eval_input_file(skill_root: Path, root_rel: Path, value: object) -> Optional[SkillDiagnostic]:
+    manifest_path = root_rel / "evals/evals.json"
     if not isinstance(value, str) or not value.strip():
-        return diag(root_rel / "evals/evals.json", "unsafe-eval-input-file", "input_files entries must be non-empty strings")
+        return diag(manifest_path, "unsafe-eval-input-file", "input_files entries must be non-empty strings")
     path = Path(value)
     rel_path = root_rel / path
     if path.is_absolute() or ".." in path.parts:
-        return diag(rel_path, "unsafe-eval-input-file", f"unsafe eval input file: {value}")
+        return diag(manifest_path, "unsafe-eval-input-file", f"unsafe eval input file: {value}")
     full = skill_root / path
     if has_symlink_component(skill_root, path):
         return diag(rel_path, "unsafe-eval-input-file", f"eval input crosses a symlink: {value}")
@@ -879,12 +883,13 @@ def validate_eval_manifest(skill_root: Path, root_rel: Path, skill_name: str) ->
         if not isinstance(prompt, str) or not prompt.strip():
             errors.append(diag(case_path, "invalid-eval-case", f"eval case {case_id or index} has no prompt"))
         kind = case.get("kind", "outcome")
-        if kind not in allowed_kinds:
+        kind_name = kind if isinstance(kind, str) else ""
+        if kind_name not in allowed_kinds:
             errors.append(diag(case_path, "invalid-eval-case", f"eval case {case_id or index} has invalid kind"))
         should_trigger = case.get("should_trigger")
         if should_trigger is not None and not isinstance(should_trigger, bool):
             errors.append(diag(case_path, "invalid-eval-case", f"eval case {case_id or index} has non-bool should_trigger"))
-        if kind == "trigger":
+        if kind_name == "trigger":
             has_trigger = True
             if should_trigger is False:
                 has_negative_trigger = True
@@ -905,11 +910,11 @@ def validate_eval_manifest(skill_root: Path, root_rel: Path, skill_name: str) ->
         expected_output = case.get("expected_output")
         if expected_output is not None and not isinstance(expected_output, str):
             errors.append(diag(case_path, "invalid-eval-case", f"eval case {case_id or index} expected_output must be a string"))
-        if kind == "outcome" and not (isinstance(assertions, list) and assertions) and not (
+        if kind_name == "outcome" and not (isinstance(assertions, list) and assertions) and not (
             isinstance(expected_output, str) and expected_output.strip()
         ):
             errors.append(diag(case_path, "invalid-eval-case", f"outcome eval {case_id or index} needs expected_output or assertions"))
-        if kind in {"process", "style"} and not (
+        if kind_name in {"process", "style"} and not (
             (isinstance(assertions, list) and assertions)
             or (isinstance(deterministic_checks, list) and deterministic_checks)
             or case.get("rubric")
@@ -1133,18 +1138,21 @@ def build_skill_inventory(root: Path) -> SkillInventory:
     skills = [validate_skill_directory(root, entry) for entry in entries]
     seen: Dict[str, Path] = {}
     description_owner: Dict[str, Path] = {}
+    updated_skills: List[SkillInfo] = []
     for skill in skills:
+        warnings = list(skill.warnings)
         lower = skill.directory.name.lower()
         if lower in seen and lower != skill.directory.name:
             warning = diag(skill.directory, "case-insensitive-duplicate-name", "skill directory differs only by case")
-            skill.warnings.append(warning)
+            warnings.append(warning)
         seen[lower] = skill.directory
         normalized_desc = re.sub(r"\s+", " ", skill.description).strip().lower()
         if normalized_desc:
             if normalized_desc in description_owner:
-                skill.warnings.append(diag(skill.skill_md or skill.directory, "duplicate-description", "description duplicates another skill"))
+                warnings.append(diag(skill.skill_md or skill.directory, "duplicate-description", "description duplicates another skill"))
             description_owner[normalized_desc] = skill.directory
-    return SkillInventory(root, skills, skipped, [])
+        updated_skills.append(replace(skill, warnings=warnings))
+    return SkillInventory(root, updated_skills, skipped, [])
 
 
 def load_skill_overrides(root: Path) -> Tuple[Dict[str, Dict[str, Any]], List[SkillDiagnostic]]:
@@ -1167,10 +1175,13 @@ def load_skill_overrides(root: Path) -> Tuple[Dict[str, Dict[str, Any]], List[Sk
         if not isinstance(value, dict):
             errors.append(diag(rel, "invalid-skill-overrides", f"override for {name} must be an object"))
             continue
-        lifecycle = value.get("lifecycle")
-        if lifecycle is not None and lifecycle not in SKILL_LIFECYCLES:
-            errors.append(diag(rel, "invalid-skill-overrides", f"invalid lifecycle for {name}: {lifecycle}"))
-            continue
+        if "lifecycle" in value:
+            lifecycle = value.get("lifecycle")
+            if not isinstance(lifecycle, str) or lifecycle not in SKILL_LIFECYCLES:
+                errors.append(diag(rel, "invalid-skill-overrides", f"invalid lifecycle for {name}: {lifecycle}"))
+                continue
+        else:
+            lifecycle = None
         overrides[name] = value
     return overrides, errors
 
@@ -1186,7 +1197,7 @@ def apply_skill_overrides(inv: SkillInventory) -> SkillInventory:
         extra_errors.append(diag(Path(".agents/skill-overrides.json"), "invalid-skill-overrides", f"override references missing skill: {name}"))
     for skill in inv.skills:
         override = overrides.get(skill.name, {})
-        lifecycle = override.get("lifecycle", skill.lifecycle)
+        lifecycle = override["lifecycle"] if "lifecycle" in override else skill.lifecycle
         updated.append(replace(skill, lifecycle=lifecycle))
     return SkillInventory(inv.root, updated, inv.skipped, inv.errors + extra_errors)
 
@@ -1424,8 +1435,13 @@ def skills_sync(root: Path, options: ScaffoldOptions, reviewed_date: str = SKILL
     return apply_planned_writes(root, planned)
 
 
-def route_label_for_skill(root: Path, skill: SkillInfo) -> Optional[str]:
-    overrides, _errors = load_skill_overrides(root)
+def route_label_for_skill(
+    root: Path,
+    skill: SkillInfo,
+    overrides: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Optional[str]:
+    if overrides is None:
+        overrides, _errors = load_skill_overrides(root)
     override = overrides.get(skill.name, {})
     label = override.get("route_label")
     if isinstance(label, str) and label.strip():
@@ -1440,13 +1456,17 @@ def skill_routes_body(root: Path) -> str:
     if inv.errors:
         first = inv.errors[0]
         raise AgentContextError(f"cannot sync skill routes with inventory errors: {first.path}: {first.code}")
+    overrides, override_errors = load_skill_overrides(root)
+    if override_errors:
+        first = override_errors[0]
+        raise AgentContextError(f"cannot sync skill routes with override errors: {first.path}: {first.code}")
     lines: List[str] = []
     for skill in inv.skills:
         if skill.validity != "valid" or skill.lifecycle in {"draft", "deprecated", "archived"}:
             continue
         if skill.lifecycle not in {"active", "watch", "experimental"}:
             continue
-        label = route_label_for_skill(root, skill)
+        label = route_label_for_skill(root, skill, overrides)
         if not label:
             continue
         lines.append(f"- {label}: read `{rel_posix(skill.skill_md)}`.")
@@ -1487,6 +1507,8 @@ def check_skill_routes(root: Path) -> List[str]:
     block = text[span.begin_start : span.end_end]
     inv = skill_inventory(root)
     errors = [f"{item.path}: {item.code}: {item.message}" for item in inv.errors]
+    overrides, override_errors = load_skill_overrides(root)
+    errors.extend(f"{item.path}: {item.code}: {item.message}" for item in override_errors)
     by_path = {rel_posix(skill.skill_md): skill for skill in inv.skills if skill.skill_md is not None}
     for ref in re.findall(r"`(\.agents/skills/[^`]+/SKILL\.md)`", block):
         skill = by_path.get(ref)
@@ -1495,7 +1517,7 @@ def check_skill_routes(root: Path) -> List[str]:
             continue
         if skill.validity != "valid" or skill.lifecycle in {"draft", "deprecated", "archived"}:
             errors.append(f".agents/routing.md routes inactive or invalid skill: {ref}")
-        if skill.lifecycle == "experimental" and route_label_for_skill(root, skill) is None:
+        if skill.lifecycle == "experimental" and route_label_for_skill(root, skill, overrides) is None:
             errors.append(f".agents/routing.md routes experimental skill without explicit route_label: {ref}")
     return errors
 
