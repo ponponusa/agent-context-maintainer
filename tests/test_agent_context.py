@@ -511,6 +511,35 @@ class AgentContextTests(unittest.TestCase):
             self.assertIn("missing-name", codes)
             self.assertIn("missing-description", codes)
 
+    def test_skills_check_reports_unreadable_skill_md_without_empty_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = root / ".agents" / "skills" / "unreadable"
+            (skill / "SKILL.md").mkdir(parents=True)
+
+            _warnings, errors = agent_context.skill_inventory_diagnostics(agent_context.skill_inventory(root))
+            codes = {item.code for item in errors}
+
+            self.assertIn("missing-skill-md", codes)
+            self.assertNotIn("missing-name", codes)
+            self.assertNotIn("missing-description", codes)
+            self.assertNotIn("invalid-frontmatter", codes)
+
+    def test_skills_check_reports_invalid_utf8_separately_from_unreadable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = root / ".agents" / "skills" / "bad-utf8"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_bytes(b"\xff\xfe")
+
+            _warnings, errors = agent_context.skill_inventory_diagnostics(agent_context.skill_inventory(root))
+            codes = {item.code for item in errors}
+            messages = "\n".join(item.message for item in errors)
+
+            self.assertIn("invalid-frontmatter", codes)
+            self.assertNotIn("missing-skill-md", codes)
+            self.assertIn("not valid UTF-8", messages)
+
     def test_skills_check_rejects_missing_description_and_name_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

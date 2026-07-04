@@ -1033,19 +1033,26 @@ def validate_skill_directory(root: Path, skill_dir: Path) -> SkillInfo:
             warnings,
             errors,
         )
+    stat_ok = False
+    read_ok = False
     try:
         byte_count = skill_md.stat().st_size
+        stat_ok = True
     except OSError:
         errors.append(diag(rel_skill_md, "missing-skill-md", "SKILL.md cannot be read"))
         byte_count = 0
     text = ""
-    if byte_count > MAX_SKILL_MD_BYTES:
-        errors.append(diag(rel_skill_md, "skill-md-too-large", "SKILL.md exceeds maximum size"))
-    else:
-        try:
-            text = skill_md.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as error:
-            errors.append(diag(rel_skill_md, "invalid-frontmatter", f"SKILL.md cannot be read as UTF-8: {error}"))
+    if stat_ok:
+        if byte_count > MAX_SKILL_MD_BYTES:
+            errors.append(diag(rel_skill_md, "skill-md-too-large", "SKILL.md exceeds maximum size"))
+        else:
+            try:
+                text = skill_md.read_text(encoding="utf-8")
+                read_ok = True
+            except UnicodeDecodeError as error:
+                errors.append(diag(rel_skill_md, "invalid-frontmatter", f"SKILL.md is not valid UTF-8: {error}"))
+            except OSError as error:
+                errors.append(diag(rel_skill_md, "missing-skill-md", f"SKILL.md cannot be read: {error}"))
         line_count = len(text.splitlines())
     if text:
         frontmatter, _body, parse_errors, parse_warnings = parse_skill_frontmatter(text)
@@ -1088,7 +1095,7 @@ def validate_skill_directory(root: Path, skill_dir: Path) -> SkillInfo:
                 warnings.append(diag(rel_skill_md, "risk-text", f"possible secret/log handling risk near line {line_no}"))
                 break
         errors.extend(validate_local_references(skill_dir, root_rel, text))
-    elif byte_count == 0:
+    elif stat_ok and read_ok and byte_count == 0:
         errors.append(diag(rel_skill_md, "invalid-frontmatter", "SKILL.md is empty"))
         errors.append(diag(rel_skill_md, "missing-name", "frontmatter name is required"))
         errors.append(diag(rel_skill_md, "missing-description", "frontmatter description is required"))

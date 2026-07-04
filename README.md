@@ -102,7 +102,7 @@ python3 scripts/agent_context.py skills eval /path/to/repo --skill code-review -
 python3 scripts/agent_context.py skills eval /path/to/repo --skill code-review --init-workspace
 ```
 
-`skills inventory` scans only direct children of `ROOT/.agents/skills/*/SKILL.md`. It parses a safe dependency-free frontmatter subset, validates required Agent Skills fields, checks safe local references, validates `evals/evals.json` when present, and reports symlinked skill directories without following them. Missing evals are warnings only; valid skills default to `active`.
+`skills inventory` scans only direct child directories under `ROOT/.agents/skills/`, then validates the `SKILL.md` inside each one. It parses a safe dependency-free frontmatter subset, validates required Agent Skills fields, checks safe local references, validates `evals/evals.json` when present, and reports symlinked skill directories without following them. Missing evals are warnings only; valid skills default to `active`.
 
 `skills sync` writes `.agents/skill-registry.yaml` and `.agents/skill-reports/skill-health.md` with deterministic content and generated markers. It preserves human content outside managed blocks and refuses unmarked files by default. `skills routes` adds compact active/watch skill routes to `.agents/routing.md` without copying skill bodies. `skills eval --init-workspace` creates local planning workspaces under `.agents/skill-workspaces/`; it does not run Codex unless `--runner codex` is explicitly provided with a prompt and output path.
 

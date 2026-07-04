@@ -102,7 +102,7 @@ python3 scripts/agent_context.py skills eval /path/to/repo --skill code-review -
 python3 scripts/agent_context.py skills eval /path/to/repo --skill code-review --init-workspace
 ```
 
-`skills inventory` は `ROOT/.agents/skills/*/SKILL.md` の direct child だけを対象にします。依存ゼロの安全な frontmatter サブセットを parse し、Agent Skills の必須フィールド、安全な local reference、存在する場合は `evals/evals.json` を検証します。symlink された skill directory は追跡せず warning として報告します。eval 不在は warning のみで、valid skill の既定 lifecycle は `active` です。
+`skills inventory` は `ROOT/.agents/skills/` 直下の skill directory だけを列挙し、それぞれの中にある `SKILL.md` を検証します。依存ゼロの安全な frontmatter サブセットを parse し、Agent Skills の必須フィールド、安全な local reference、存在する場合は `evals/evals.json` を検証します。symlink された skill directory は追跡せず warning として報告します。eval 不在は warning のみで、valid skill の既定 lifecycle は `active` です。
 
 `skills sync` は `.agents/skill-registry.yaml` と `.agents/skill-reports/skill-health.md` を deterministic な generated marker 付きファイルとして書きます。marker 外の手書き内容は維持し、marker のない既存ファイルはデフォルトで拒否します。`skills routes` は active/watch skill への短い route を `.agents/routing.md` に追加し、skill body はコピーしません。`skills eval --init-workspace` は `.agents/skill-workspaces/` に local planning workspace を作ります。`--runner codex` と prompt/output path を明示しない限り Codex は実行しません。
 
