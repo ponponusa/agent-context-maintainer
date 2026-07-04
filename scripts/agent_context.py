@@ -8,10 +8,11 @@ import json
 import os
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from textwrap import dedent
+from typing import Any, Dict, List, Optional, Tuple
 
 
 BEGIN = "<!-- agent-context-maintainer:begin -->"
@@ -229,6 +230,19 @@ LANG_EXTS = {
 AGENTS_REF_RE = re.compile(r"`(\.agents/[^`\s)]+)`")
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 PROVIDER_REGISTRY_REVIEWED = "2026-07-02"  # update together with reports/provider-review-*.md
+SKILL_NAME_RE = re.compile(r"^(?!.*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+SKILL_FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n?", re.DOTALL)
+MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+BACKTICK_LOCAL_PATH_RE = re.compile(r"`((?:scripts|references|assets|evals)/[^`]+)`")
+NEGATION_RE = re.compile(r"\b(do not|don't|never|avoid|must not|should not)\b", re.I)
+RISK_RE = re.compile(r"\b(\.env|secret|secrets|token|tokens|credential|credentials|raw\s+logs?)\b", re.I)
+MAX_SKILL_NAME_CHARS = 64
+MAX_SKILL_DESCRIPTION_CHARS = 1024
+MAX_SKILL_COMPATIBILITY_CHARS = 500
+MAX_SKILL_MAIN_LINES = 500
+MAX_SKILL_MD_BYTES = 1_000_000
+SKILL_REGISTRY_REVIEWED = "2026-07-04"
+SKILL_LIFECYCLES = {"draft", "experimental", "active", "watch", "deprecated", "archived"}
 
 
 class AgentContextError(RuntimeError):
@@ -251,6 +265,10 @@ MARKDOWN_MARKERS = MarkerStyle(BEGIN, END)
 YAML_MARKERS = MarkerStyle(
     "# agent-context-maintainer:begin",
     "# agent-context-maintainer:end",
+)
+SKILL_ROUTE_MARKERS = MarkerStyle(
+    "<!-- agent-context-maintainer:skills-begin -->",
+    "<!-- agent-context-maintainer:skills-end -->",
 )
 
 
@@ -280,6 +298,74 @@ class SkippedPath:
 class InventoryScan:
     files: list[Path]
     skipped: list[SkippedPath]
+
+
+@dataclass(frozen=True)
+class SkillDiagnostic:
+    path: str
+    code: str
+    message: str
+
+
+@dataclass(frozen=True)
+class SkillFrontmatter:
+    name: Optional[str]
+    description: Optional[str]
+    compatibility: Optional[str]
+    license: Optional[str]
+    allowed_tools: Optional[str]
+    metadata: Dict[str, str]
+    raw: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class SkillEvalManifest:
+    path: Path
+    exists: bool
+    valid_json: bool
+    eval_count: int
+    errors: List[SkillDiagnostic]
+    warnings: List[SkillDiagnostic]
+    case_ids: List[str]
+
+
+@dataclass(frozen=True)
+class SkillQuality:
+    eval_coverage: str
+    has_trigger_evals: bool
+    has_negative_trigger_evals: bool
+    has_assertions: bool
+
+
+@dataclass(frozen=True)
+class SkillInfo:
+    name: str
+    directory: Path
+    skill_md: Optional[Path]
+    frontmatter: Optional[SkillFrontmatter]
+    description: str
+    compatibility: Optional[str]
+    allowed_tools: Optional[str]
+    validity: str
+    lifecycle: str
+    quality: SkillQuality
+    scripts: List[Path]
+    references: List[Path]
+    assets: List[Path]
+    codex_metadata: Optional[Path]
+    eval_manifest: SkillEvalManifest
+    line_count: int
+    byte_count: int
+    warnings: List[SkillDiagnostic]
+    errors: List[SkillDiagnostic]
+
+
+@dataclass(frozen=True)
+class SkillInventory:
+    root: Path
+    skills: List[SkillInfo]
+    skipped: List[SkippedPath]
+    errors: List[SkillDiagnostic]
 
 
 def is_secret(path: Path) -> bool:
@@ -352,7 +438,7 @@ def git_ignored_paths(root: Path, paths: list[Path]) -> set[str]:
     return ignored
 
 
-def skip_directory_reason(path: Path, rel: Path) -> str | None:
+def skip_directory_reason(path: Path, rel: Path) -> Optional[str]:
     if path.name in EXCLUDED_DIRS:
         return "excluded-directory"
     if path.is_symlink():
@@ -364,10 +450,14 @@ def skip_directory_reason(path: Path, rel: Path) -> str | None:
         # scaffold non-convergent: each update writes a snapshot, which would
         # change the inventory, which would change core.md again.
         return "tool-snapshot-directory"
+    if rel.parts[:2] == (".agents", "skill-workspaces"):
+        return "tool-workspace-directory"
+    if rel.parts[:2] == (".agents", "telemetry"):
+        return "tool-telemetry-directory"
     return None
 
 
-def skip_file_reason(path: Path, rel: Path) -> str | None:
+def skip_file_reason(path: Path, rel: Path) -> Optional[str]:
     suffix = path.suffix.lower()
     if path.is_symlink():
         return "symlink-file"
@@ -482,7 +572,1073 @@ def inventory(root: Path, explain_skips: bool = False) -> dict[str, object]:
     return result
 
 
-def detect_agent() -> tuple[str, str | None]:
+def rel_posix(path: Path) -> str:
+    return path.as_posix()
+
+
+def diag(path: Path, code: str, message: str) -> SkillDiagnostic:
+    return SkillDiagnostic(rel_posix(path), code, message)
+
+
+def diag_dict(item: SkillDiagnostic) -> Dict[str, str]:
+    return {"path": item.path, "code": item.code, "message": item.message}
+
+
+def unquote_scalar(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] == "'":
+        return value[1:-1].replace("''", "'")
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        inner = value[1:-1]
+        replacements = {
+            r"\\": "\\",
+            r"\"": '"',
+            r"\n": "\n",
+            r"\r": "\r",
+            r"\t": "\t",
+        }
+        for old, new in replacements.items():
+            inner = inner.replace(old, new)
+        return inner
+    return value
+
+
+def malformed_quoted_scalar(value: str) -> bool:
+    if not value:
+        return False
+    for quote in ("'", '"'):
+        if value.startswith(quote) != value.endswith(quote):
+            return True
+    return False
+
+
+def parse_block_scalar(lines: List[str], start: int, folded: bool) -> Tuple[str, int]:
+    block: List[str] = []
+    index = start
+    while index < len(lines):
+        line = lines[index]
+        if line and not line.startswith((" ", "\t")):
+            break
+        block.append(line[2:] if line.startswith("  ") else line.lstrip())
+        index += 1
+    if folded:
+        paragraphs: List[str] = []
+        current: List[str] = []
+        for line in block:
+            if line.strip() == "":
+                if current:
+                    paragraphs.append(" ".join(current).strip())
+                    current = []
+                paragraphs.append("")
+            else:
+                current.append(line.strip())
+        if current:
+            paragraphs.append(" ".join(current).strip())
+        return "\n".join(paragraphs).strip(), index
+    return "\n".join(block).strip("\n"), index
+
+
+def parse_metadata_block(lines: List[str], start: int) -> Tuple[Dict[str, str], int, List[str]]:
+    metadata: Dict[str, str] = {}
+    warnings: List[str] = []
+    index = start
+    while index < len(lines):
+        line = lines[index]
+        if line and not line.startswith((" ", "\t")):
+            break
+        stripped = line.strip()
+        index += 1
+        if not stripped:
+            continue
+        if ":" not in stripped:
+            warnings.append(f"unsupported metadata line ignored: {stripped}")
+            continue
+        key, value = stripped.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key or value in {"|", ">"} or value.startswith(("[", "{")):
+            warnings.append(f"unsupported metadata value ignored: {key}")
+            continue
+        metadata[key] = unquote_scalar(value)
+    return metadata, index, warnings
+
+
+def parse_skill_frontmatter(text: str) -> Tuple[Optional[SkillFrontmatter], str, List[str], List[str]]:
+    match = SKILL_FRONTMATTER_RE.match(text)
+    if not match:
+        return None, text, ["SKILL.md must start with closed YAML frontmatter"], []
+    frontmatter_text = match.group(1)
+    body = text[match.end() :]
+    raw: Dict[str, Any] = {}
+    metadata: Dict[str, str] = {}
+    errors: List[str] = []
+    warnings: List[str] = []
+    lines = frontmatter_text.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        index += 1
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if line.startswith((" ", "\t")):
+            warnings.append(f"unsupported indented top-level line ignored: {line.strip()}")
+            continue
+        if ":" not in line:
+            errors.append(f"unsupported frontmatter line: {line.strip()}")
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            errors.append("frontmatter contains an empty key")
+            continue
+        if value in {"|", ">"}:
+            scalar, index = parse_block_scalar(lines, index, folded=value == ">")
+            raw[key] = scalar
+            continue
+        if key == "metadata" and value == "":
+            metadata, index, metadata_warnings = parse_metadata_block(lines, index)
+            warnings.extend(metadata_warnings)
+            raw[key] = metadata
+            continue
+        if value == "" or value.startswith(("[", "{", "&", "*", "!")):
+            warnings.append(f"unsupported value for {key} ignored")
+            continue
+        if malformed_quoted_scalar(value):
+            errors.append(f"unterminated quoted scalar for {key}")
+            continue
+        raw[key] = unquote_scalar(value)
+    frontmatter = SkillFrontmatter(
+        name=raw.get("name") if isinstance(raw.get("name"), str) else None,
+        description=raw.get("description") if isinstance(raw.get("description"), str) else None,
+        compatibility=raw.get("compatibility") if isinstance(raw.get("compatibility"), str) else None,
+        license=raw.get("license") if isinstance(raw.get("license"), str) else None,
+        allowed_tools=raw.get("allowed-tools") if isinstance(raw.get("allowed-tools"), str) else None,
+        metadata=metadata,
+        raw=raw,
+    )
+    return frontmatter, body, errors, warnings
+
+
+def discover_skill_entries(root: Path) -> Tuple[List[Path], List[SkippedPath]]:
+    skills_root = root / ".agents" / "skills"
+    if has_symlink_component(root, Path(".agents/skills")):
+        return [], [SkippedPath(".agents/skills/", "unmanaged-symlink-skill")]
+    if not skills_root.is_dir():
+        return [], []
+    entries: List[Path] = []
+    skipped: List[SkippedPath] = []
+    for child in sorted(skills_root.iterdir(), key=lambda item: item.name.lower()):
+        rel = child.relative_to(root)
+        if child.is_symlink():
+            skipped.append(SkippedPath(rel_posix(rel) + "/", "unmanaged-symlink-skill"))
+            continue
+        if child.is_dir():
+            entries.append(child)
+    return entries, skipped
+
+
+def safe_skill_file_reason(path: Path, rel: Path) -> Optional[str]:
+    reason = skip_file_reason(path, rel)
+    if reason:
+        return reason
+    return None
+
+
+def has_symlink_component(base: Path, rel: Path) -> bool:
+    current = base
+    for part in rel.parts:
+        current = current / part
+        if current.is_symlink():
+            return True
+    return False
+
+
+def local_reference_target(value: str) -> Optional[str]:
+    value = value.strip()
+    if not value or value.startswith(("#", "http://", "https://", "mailto:")):
+        return None
+    if value.startswith("file://"):
+        return value
+    value = value.split("#", 1)[0].split("?", 1)[0]
+    if value.startswith(("scripts/", "references/", "assets/", "evals/")):
+        return value
+    if value.startswith("/") or ".." in Path(value).parts:
+        return value
+    return None
+
+
+def validate_local_reference(skill_root: Path, root_rel: Path, value: str) -> List[SkillDiagnostic]:
+    target_text = local_reference_target(value)
+    if target_text is None:
+        return []
+    if target_text.startswith("file://"):
+        return [diag(root_rel, "unsafe-local-reference", f"unsafe local reference: {value}")]
+    target = Path(target_text)
+    rel_path = root_rel / target
+    if target.is_absolute() or ".." in target.parts:
+        return [diag(rel_path, "unsafe-local-reference", f"unsafe local reference: {value}")]
+    full = skill_root / target
+    if has_symlink_component(skill_root, target):
+        return [diag(rel_path, "unsafe-local-reference", f"reference crosses a symlink: {value}")]
+    try:
+        full.resolve().relative_to(skill_root.resolve())
+    except ValueError:
+        return [diag(rel_path, "unsafe-local-reference", f"reference escapes skill directory: {value}")]
+    if not full.exists():
+        return [diag(rel_path, "broken-local-reference", f"referenced path is missing: {value}")]
+    if full.is_symlink():
+        return [diag(rel_path, "unsafe-local-reference", f"referenced path is a symlink: {value}")]
+    if full.is_file():
+        reason = safe_skill_file_reason(full, rel_path)
+        if reason:
+            return [diag(rel_path, "unsafe-local-reference", f"referenced path is not safe to read: {reason}")]
+    return []
+
+
+def validate_local_references(skill_root: Path, root_rel: Path, text: str) -> List[SkillDiagnostic]:
+    errors: List[SkillDiagnostic] = []
+    for match in MARKDOWN_LINK_RE.findall(text):
+        errors.extend(validate_local_reference(skill_root, root_rel, match))
+    for match in BACKTICK_LOCAL_PATH_RE.findall(text):
+        errors.extend(validate_local_reference(skill_root, root_rel, match))
+    return errors
+
+
+def validate_eval_input_file(skill_root: Path, root_rel: Path, value: object) -> Optional[SkillDiagnostic]:
+    if not isinstance(value, str) or not value.strip():
+        return diag(root_rel / "evals/evals.json", "unsafe-eval-input-file", "input_files entries must be non-empty strings")
+    path = Path(value)
+    rel_path = root_rel / path
+    if path.is_absolute() or ".." in path.parts:
+        return diag(rel_path, "unsafe-eval-input-file", f"unsafe eval input file: {value}")
+    full = skill_root / path
+    if has_symlink_component(skill_root, path):
+        return diag(rel_path, "unsafe-eval-input-file", f"eval input crosses a symlink: {value}")
+    try:
+        full.resolve().relative_to(skill_root.resolve())
+    except ValueError:
+        return diag(rel_path, "unsafe-eval-input-file", f"eval input escapes skill directory: {value}")
+    if not full.exists():
+        return diag(rel_path, "unsafe-eval-input-file", f"eval input file is missing: {value}")
+    if full.is_symlink():
+        return diag(rel_path, "unsafe-eval-input-file", f"eval input file is a symlink: {value}")
+    reason = safe_skill_file_reason(full, rel_path)
+    if reason:
+        return diag(rel_path, "unsafe-eval-input-file", f"eval input file is not safe: {reason}")
+    return None
+
+
+def validate_eval_manifest(skill_root: Path, root_rel: Path, skill_name: str) -> SkillEvalManifest:
+    rel = root_rel / "evals/evals.json"
+    path = skill_root / "evals" / "evals.json"
+    errors: List[SkillDiagnostic] = []
+    warnings: List[SkillDiagnostic] = []
+    case_ids: List[str] = []
+    if not path.exists():
+        warnings.append(diag(rel, "missing-evals", "evals/evals.json is absent"))
+        return SkillEvalManifest(rel, False, False, 0, errors, warnings, case_ids)
+    if path.is_symlink() or has_symlink_component(skill_root, Path("evals/evals.json")):
+        errors.append(diag(rel, "invalid-evals-json", "evals/evals.json is a symlink and was not read"))
+        return SkillEvalManifest(rel, True, False, 0, errors, warnings, case_ids)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        errors.append(diag(rel, "invalid-evals-json", f"evals/evals.json is not valid JSON: {error}"))
+        return SkillEvalManifest(rel, True, False, 0, errors, warnings, case_ids)
+    if not isinstance(data, dict):
+        errors.append(diag(rel, "invalid-evals-json", "evals/evals.json must contain a JSON object"))
+        return SkillEvalManifest(rel, True, True, 0, errors, warnings, case_ids)
+    if not isinstance(data.get("schema_version"), int) or isinstance(data.get("schema_version"), bool) or data.get("schema_version") != 1:
+        errors.append(diag(rel, "invalid-eval-case", "schema_version must be 1"))
+    if data.get("skill_name") != skill_name:
+        errors.append(diag(rel, "invalid-eval-case", "skill_name must match the skill name"))
+    cases = data.get("evals")
+    if not isinstance(cases, list):
+        errors.append(diag(rel, "invalid-eval-case", "evals must be a list"))
+        return SkillEvalManifest(rel, True, True, 0, errors, warnings, case_ids)
+    seen: set[str] = set()
+    has_trigger = False
+    has_negative_trigger = False
+    has_assertions = False
+    allowed_kinds = {"trigger", "outcome", "process", "style", "efficiency"}
+    for index, case in enumerate(cases):
+        case_path = root_rel / "evals/evals.json"
+        if not isinstance(case, dict):
+            errors.append(diag(case_path, "invalid-eval-case", f"eval case {index} must be an object"))
+            continue
+        case_id = case.get("id")
+        if not isinstance(case_id, str) or not case_id.strip():
+            errors.append(diag(case_path, "invalid-eval-case", f"eval case {index} has no non-empty id"))
+        elif case_id in seen:
+            errors.append(diag(case_path, "invalid-eval-case", f"duplicate eval id: {case_id}"))
+        else:
+            seen.add(case_id)
+            case_ids.append(case_id)
+        prompt = case.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            errors.append(diag(case_path, "invalid-eval-case", f"eval case {case_id or index} has no prompt"))
+        kind = case.get("kind", "outcome")
+        if kind not in allowed_kinds:
+            errors.append(diag(case_path, "invalid-eval-case", f"eval case {case_id or index} has invalid kind"))
+        should_trigger = case.get("should_trigger")
+        if should_trigger is not None and not isinstance(should_trigger, bool):
+            errors.append(diag(case_path, "invalid-eval-case", f"eval case {case_id or index} has non-bool should_trigger"))
+        if kind == "trigger":
+            has_trigger = True
+            if should_trigger is False:
+                has_negative_trigger = True
+            if should_trigger is None:
+                errors.append(diag(case_path, "invalid-eval-case", f"trigger eval {case_id or index} must set should_trigger"))
+        assertions = case.get("assertions")
+        negative_assertions = case.get("negative_assertions")
+        deterministic_checks = case.get("deterministic_checks")
+        for field_name, field_value in (
+            ("assertions", assertions),
+            ("negative_assertions", negative_assertions),
+            ("deterministic_checks", deterministic_checks),
+        ):
+            if field_value is not None and not isinstance(field_value, list):
+                errors.append(diag(case_path, "invalid-eval-case", f"eval case {case_id or index} {field_name} must be a list"))
+        if any(isinstance(item, list) and item for item in (assertions, negative_assertions, deterministic_checks)):
+            has_assertions = True
+        expected_output = case.get("expected_output")
+        if expected_output is not None and not isinstance(expected_output, str):
+            errors.append(diag(case_path, "invalid-eval-case", f"eval case {case_id or index} expected_output must be a string"))
+        if kind == "outcome" and not (isinstance(assertions, list) and assertions) and not (
+            isinstance(expected_output, str) and expected_output.strip()
+        ):
+            errors.append(diag(case_path, "invalid-eval-case", f"outcome eval {case_id or index} needs expected_output or assertions"))
+        if kind in {"process", "style"} and not (
+            (isinstance(assertions, list) and assertions)
+            or (isinstance(deterministic_checks, list) and deterministic_checks)
+            or case.get("rubric")
+        ):
+            errors.append(diag(case_path, "invalid-eval-case", f"{kind} eval {case_id or index} needs assertions, checks, or rubric"))
+        input_files = case.get("input_files", [])
+        if input_files is None:
+            input_files = []
+        if not isinstance(input_files, list):
+            errors.append(diag(case_path, "invalid-eval-case", f"eval case {case_id or index} input_files must be a list"))
+        else:
+            for item in input_files:
+                input_error = validate_eval_input_file(skill_root, root_rel, item)
+                if input_error is not None:
+                    errors.append(input_error)
+    if cases and not has_trigger:
+        warnings.append(diag(rel, "missing-trigger-evals", "evals exist but no trigger eval was found"))
+    if cases and not has_negative_trigger:
+        warnings.append(diag(rel, "missing-negative-trigger-evals", "evals exist but no negative trigger eval was found"))
+    if cases and not has_assertions:
+        warnings.append(diag(rel, "missing-assertions", "evals exist but no assertions were found"))
+    return SkillEvalManifest(rel, True, True, len(cases), errors, warnings, case_ids)
+
+
+def collect_skill_paths(skill_root: Path, folder: str) -> List[Path]:
+    path = skill_root / folder
+    if not path.is_dir() or path.is_symlink():
+        return []
+    found: List[Path] = []
+    for current, dirs, files in os.walk(path):
+        current_path = Path(current)
+        dirs[:] = sorted(dirname for dirname in dirs if not (current_path / dirname).is_symlink())
+        for file_name in sorted(files):
+            item = current_path / file_name
+            if item.is_file() and not item.is_symlink():
+                found.append(item.relative_to(skill_root))
+    return found
+
+
+def explicit_lifecycle(frontmatter: Optional[SkillFrontmatter]) -> Optional[str]:
+    if frontmatter is None:
+        return None
+    value = frontmatter.metadata.get("agent-context-maintainer.status")
+    if not value:
+        return None
+    return value.strip()
+
+
+def vague_description(description: str) -> bool:
+    normalized = re.sub(r"\s+", " ", description).strip().lower()
+    return len(normalized) < 40 or normalized in {"helps.", "helps", "helper", "useful skill"}
+
+
+def validate_skill_directory(root: Path, skill_dir: Path) -> SkillInfo:
+    root_rel = skill_dir.relative_to(root)
+    skill_md = skill_dir / "SKILL.md"
+    rel_skill_md = root_rel / "SKILL.md"
+    warnings: List[SkillDiagnostic] = []
+    errors: List[SkillDiagnostic] = []
+    description = ""
+    compatibility: Optional[str] = None
+    allowed_tools: Optional[str] = None
+    frontmatter: Optional[SkillFrontmatter] = None
+    line_count = 0
+    byte_count = 0
+    name = skill_dir.name
+    if not SKILL_NAME_RE.match(skill_dir.name):
+        errors.append(diag(root_rel, "invalid-directory-name", "skill directory name must be lowercase ASCII, digits, or hyphen"))
+    if not skill_md.exists():
+        errors.append(diag(rel_skill_md, "missing-skill-md", "SKILL.md is missing"))
+        empty_eval = SkillEvalManifest(root_rel / "evals/evals.json", False, False, 0, [], [], [])
+        quality = SkillQuality("missing", False, False, False)
+        return SkillInfo(
+            name,
+            root_rel,
+            None,
+            None,
+            description,
+            compatibility,
+            allowed_tools,
+            "invalid",
+            "active",
+            quality,
+            [],
+            [],
+            [],
+            None,
+            empty_eval,
+            line_count,
+            byte_count,
+            warnings,
+            errors,
+        )
+    if skill_md.is_symlink():
+        errors.append(diag(rel_skill_md, "unsafe-local-reference", "SKILL.md is a symlink and was not read"))
+        empty_eval = SkillEvalManifest(root_rel / "evals/evals.json", False, False, 0, [], [], [])
+        quality = SkillQuality("missing", False, False, False)
+        return SkillInfo(
+            name,
+            root_rel,
+            rel_skill_md,
+            None,
+            description,
+            compatibility,
+            allowed_tools,
+            "invalid",
+            "active",
+            quality,
+            [],
+            [],
+            [],
+            None,
+            empty_eval,
+            line_count,
+            byte_count,
+            warnings,
+            errors,
+        )
+    try:
+        byte_count = skill_md.stat().st_size
+    except OSError:
+        errors.append(diag(rel_skill_md, "missing-skill-md", "SKILL.md cannot be read"))
+        byte_count = 0
+    text = ""
+    if byte_count > MAX_SKILL_MD_BYTES:
+        errors.append(diag(rel_skill_md, "skill-md-too-large", "SKILL.md exceeds maximum size"))
+    else:
+        try:
+            text = skill_md.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            errors.append(diag(rel_skill_md, "invalid-frontmatter", f"SKILL.md cannot be read as UTF-8: {error}"))
+        line_count = len(text.splitlines())
+    if text:
+        frontmatter, _body, parse_errors, parse_warnings = parse_skill_frontmatter(text)
+        errors.extend(diag(rel_skill_md, "invalid-frontmatter", item) for item in parse_errors)
+        warnings.extend(diag(rel_skill_md, "invalid-frontmatter", item) for item in parse_warnings)
+        if frontmatter is not None:
+            fm_name = (frontmatter.name or "").strip()
+            if not fm_name:
+                errors.append(diag(rel_skill_md, "missing-name", "frontmatter name is required"))
+            elif not SKILL_NAME_RE.match(fm_name):
+                errors.append(diag(rel_skill_md, "invalid-name", "frontmatter name has an invalid format"))
+            elif fm_name != skill_dir.name:
+                errors.append(diag(rel_skill_md, "name-directory-mismatch", "frontmatter name must match parent directory"))
+            else:
+                name = fm_name
+            description = (frontmatter.description or "").strip()
+            compatibility = frontmatter.compatibility
+            allowed_tools = frontmatter.allowed_tools
+            if not description:
+                errors.append(diag(rel_skill_md, "missing-description", "frontmatter description is required"))
+            elif len(description) > MAX_SKILL_DESCRIPTION_CHARS:
+                errors.append(diag(rel_skill_md, "long-description", "description exceeds 1024 characters"))
+            elif vague_description(description):
+                warnings.append(diag(rel_skill_md, "vague-description", "description is too short or vague"))
+            if description and not re.search(r"\b(Use when|Use for|Do not use when)\b", description, re.I):
+                warnings.append(diag(rel_skill_md, "missing-trigger-boundary", "description should describe when to use the skill"))
+            if compatibility is not None and len(compatibility) > MAX_SKILL_COMPATIBILITY_CHARS:
+                errors.append(diag(rel_skill_md, "long-compatibility", "compatibility exceeds 500 characters"))
+            lifecycle_value = explicit_lifecycle(frontmatter)
+            if lifecycle_value and lifecycle_value not in SKILL_LIFECYCLES:
+                warnings.append(diag(rel_skill_md, "invalid-lifecycle", "unknown lifecycle metadata; defaulting to active"))
+            if allowed_tools:
+                warnings.append(diag(rel_skill_md, "allowed-tools-experimental", "allowed-tools is metadata only, not a safety boundary"))
+        else:
+            errors.append(diag(rel_skill_md, "invalid-frontmatter", "frontmatter could not be parsed"))
+        if line_count > MAX_SKILL_MAIN_LINES:
+            warnings.append(diag(rel_skill_md, "long-skill-md", "SKILL.md is longer than 500 lines"))
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            if RISK_RE.search(line) and not NEGATION_RE.search(line):
+                warnings.append(diag(rel_skill_md, "risk-text", f"possible secret/log handling risk near line {line_no}"))
+                break
+        errors.extend(validate_local_references(skill_dir, root_rel, text))
+    elif byte_count == 0:
+        errors.append(diag(rel_skill_md, "invalid-frontmatter", "SKILL.md is empty"))
+        errors.append(diag(rel_skill_md, "missing-name", "frontmatter name is required"))
+        errors.append(diag(rel_skill_md, "missing-description", "frontmatter description is required"))
+    eval_manifest = validate_eval_manifest(skill_dir, root_rel, name)
+    warnings.extend(eval_manifest.warnings)
+    errors.extend(eval_manifest.errors)
+    scripts = sorted((root_rel / item for item in collect_skill_paths(skill_dir, "scripts")), key=str)
+    references = sorted((root_rel / item for item in collect_skill_paths(skill_dir, "references")), key=str)
+    assets = sorted((root_rel / item for item in collect_skill_paths(skill_dir, "assets")), key=str)
+    if scripts and not compatibility:
+        warnings.append(diag(rel_skill_md, "script-without-compatibility", "scripts exist but compatibility does not describe runtime requirements"))
+    codex_metadata_path = skill_dir / "agents" / "openai.yaml"
+    codex_metadata = root_rel / "agents/openai.yaml" if codex_metadata_path.exists() else None
+    if codex_metadata is not None:
+        warnings.append(diag(codex_metadata, "codex-metadata-unparsed", "agents/openai.yaml exists but is not parsed"))
+    quality = skill_manifest_quality(eval_manifest)
+    lifecycle = "active"
+    lifecycle_value = explicit_lifecycle(frontmatter)
+    if lifecycle_value in SKILL_LIFECYCLES:
+        lifecycle = lifecycle_value
+    validity = "invalid" if errors else "valid"
+    return SkillInfo(
+        name,
+        root_rel,
+        rel_skill_md,
+        frontmatter,
+        description,
+        compatibility,
+        allowed_tools,
+        validity,
+        lifecycle,
+        quality,
+        scripts,
+        references,
+        assets,
+        codex_metadata,
+        eval_manifest,
+        line_count,
+        byte_count,
+        warnings,
+        errors,
+    )
+
+
+def build_skill_inventory(root: Path) -> SkillInventory:
+    entries, skipped = discover_skill_entries(root)
+    skills = [validate_skill_directory(root, entry) for entry in entries]
+    seen: Dict[str, Path] = {}
+    description_owner: Dict[str, Path] = {}
+    for skill in skills:
+        lower = skill.directory.name.lower()
+        if lower in seen and lower != skill.directory.name:
+            warning = diag(skill.directory, "case-insensitive-duplicate-name", "skill directory differs only by case")
+            skill.warnings.append(warning)
+        seen[lower] = skill.directory
+        normalized_desc = re.sub(r"\s+", " ", skill.description).strip().lower()
+        if normalized_desc:
+            if normalized_desc in description_owner:
+                skill.warnings.append(diag(skill.skill_md or skill.directory, "duplicate-description", "description duplicates another skill"))
+            description_owner[normalized_desc] = skill.directory
+    return SkillInventory(root, skills, skipped, [])
+
+
+def load_skill_overrides(root: Path) -> Tuple[Dict[str, Dict[str, Any]], List[SkillDiagnostic]]:
+    path = root / ".agents" / "skill-overrides.json"
+    if not path.exists():
+        return {}, []
+    rel = Path(".agents/skill-overrides.json")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        return {}, [diag(rel, "invalid-skill-overrides", f"skill overrides are not valid JSON: {error}")]
+    if not isinstance(data, dict):
+        return {}, [diag(rel, "invalid-skill-overrides", "skill overrides must contain a JSON object")]
+    overrides: Dict[str, Dict[str, Any]] = {}
+    errors: List[SkillDiagnostic] = []
+    for name, value in data.items():
+        if not isinstance(name, str) or not SKILL_NAME_RE.match(name):
+            errors.append(diag(rel, "invalid-skill-overrides", f"invalid override skill name: {name}"))
+            continue
+        if not isinstance(value, dict):
+            errors.append(diag(rel, "invalid-skill-overrides", f"override for {name} must be an object"))
+            continue
+        lifecycle = value.get("lifecycle")
+        if lifecycle is not None and lifecycle not in SKILL_LIFECYCLES:
+            errors.append(diag(rel, "invalid-skill-overrides", f"invalid lifecycle for {name}: {lifecycle}"))
+            continue
+        overrides[name] = value
+    return overrides, errors
+
+
+def apply_skill_overrides(inv: SkillInventory) -> SkillInventory:
+    overrides, override_errors = load_skill_overrides(inv.root)
+    if not overrides:
+        return SkillInventory(inv.root, inv.skills, inv.skipped, inv.errors + override_errors)
+    updated: List[SkillInfo] = []
+    known = {skill.name for skill in inv.skills}
+    extra_errors = list(override_errors)
+    for name in sorted(set(overrides) - known):
+        extra_errors.append(diag(Path(".agents/skill-overrides.json"), "invalid-skill-overrides", f"override references missing skill: {name}"))
+    for skill in inv.skills:
+        override = overrides.get(skill.name, {})
+        lifecycle = override.get("lifecycle", skill.lifecycle)
+        updated.append(replace(skill, lifecycle=lifecycle))
+    return SkillInventory(inv.root, updated, inv.skipped, inv.errors + extra_errors)
+
+
+def skill_inventory(root: Path, include_overrides: bool = True) -> SkillInventory:
+    inv = build_skill_inventory(root)
+    return apply_skill_overrides(inv) if include_overrides else inv
+
+
+def skill_manifest_quality(inv: SkillEvalManifest) -> SkillQuality:
+    has_trigger = inv.exists and inv.eval_count > 0 and not any(w.code == "missing-trigger-evals" for w in inv.warnings)
+    has_negative = inv.exists and inv.eval_count > 0 and not any(w.code == "missing-negative-trigger-evals" for w in inv.warnings)
+    has_assertions = inv.exists and inv.eval_count > 0 and not any(w.code == "missing-assertions" for w in inv.warnings)
+    if inv.errors:
+        coverage = "invalid"
+    elif inv.exists:
+        coverage = "present" if inv.eval_count else "partial"
+    else:
+        coverage = "missing"
+    return SkillQuality(coverage, has_trigger, has_negative, has_assertions)
+
+
+def skill_to_json(skill: SkillInfo) -> Dict[str, object]:
+    return {
+        "name": skill.name,
+        "directory": rel_posix(skill.directory),
+        "path": rel_posix(skill.skill_md) if skill.skill_md else None,
+        "validity": skill.validity,
+        "lifecycle": skill.lifecycle,
+        "description": skill.description,
+        "compatibility": skill.compatibility,
+        "allowed_tools": skill.allowed_tools,
+        "codex_metadata": rel_posix(skill.codex_metadata) if skill.codex_metadata else None,
+        "quality": {
+            "eval_coverage": skill.quality.eval_coverage,
+            "has_trigger_evals": skill.quality.has_trigger_evals,
+            "has_negative_trigger_evals": skill.quality.has_negative_trigger_evals,
+            "has_assertions": skill.quality.has_assertions,
+        },
+        "counts": {
+            "lines": skill.line_count,
+            "bytes": skill.byte_count,
+            "scripts": len(skill.scripts),
+            "references": len(skill.references),
+            "assets": len(skill.assets),
+            "evals": skill.eval_manifest.eval_count,
+        },
+        "evals": {
+            "path": rel_posix(skill.eval_manifest.path),
+            "exists": skill.eval_manifest.exists,
+            "valid_json": skill.eval_manifest.valid_json,
+            "eval_count": skill.eval_manifest.eval_count,
+            "case_ids": skill.eval_manifest.case_ids,
+            "errors": [diag_dict(item) for item in skill.eval_manifest.errors],
+            "warnings": [diag_dict(item) for item in skill.eval_manifest.warnings],
+        },
+        "warnings": [diag_dict(item) for item in skill.warnings],
+        "errors": [diag_dict(item) for item in skill.errors],
+    }
+
+
+def skill_inventory_json(inv: SkillInventory) -> Dict[str, object]:
+    return {
+        "root_name": inv.root.name,
+        "skills_root": ".agents/skills",
+        "skill_count": len(inv.skills),
+        "skills": [skill_to_json(skill) for skill in inv.skills],
+        "skipped": [{"path": item.path, "reason": item.reason} for item in inv.skipped],
+        "errors": [diag_dict(item) for item in inv.errors],
+    }
+
+
+def skill_inventory_diagnostics(inv: SkillInventory) -> Tuple[List[SkillDiagnostic], List[SkillDiagnostic]]:
+    warnings: List[SkillDiagnostic] = []
+    errors: List[SkillDiagnostic] = list(inv.errors)
+    for skipped in inv.skipped:
+        if skipped.reason == "unmanaged-symlink-skill":
+            warnings.append(SkillDiagnostic(skipped.path, skipped.reason, "symlinked skill directory was not followed"))
+    for skill in inv.skills:
+        warnings.extend(skill.warnings)
+        errors.extend(skill.errors)
+    return warnings, errors
+
+
+def check_skill_errors_only(root: Path) -> List[str]:
+    _warnings, errors = skill_inventory_diagnostics(skill_inventory(root))
+    return [f"{item.path}: {item.code}: {item.message}" for item in errors]
+
+
+def sanitize_inline(value: str) -> str:
+    value = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value.replace("`", "\\`").replace("|", "\\|")
+
+
+def yaml_scalar(value: Optional[str]) -> str:
+    if value is None:
+        return "null"
+    escaped = []
+    for char in value:
+        code = ord(char)
+        if char == "\\":
+            escaped.append("\\\\")
+        elif char == '"':
+            escaped.append('\\"')
+        elif char == "\n":
+            escaped.append("\\n")
+        elif char == "\r":
+            escaped.append("\\r")
+        elif code < 32:
+            escaped.append(f"\\x{code:02x}")
+        else:
+            escaped.append(char)
+    return '"' + "".join(escaped) + '"'
+
+
+def skill_registry_body(inv: SkillInventory, reviewed_date: str = SKILL_REGISTRY_REVIEWED) -> str:
+    lines = [
+        "schema_version: 1",
+        f"source_reviewed: {yaml_scalar(reviewed_date)}",
+        'generated_by: "agent-context-maintainer"',
+        "skills:",
+    ]
+    for skill in inv.skills:
+        lines.append(f"  - name: {yaml_scalar(skill.name)}")
+        lines.append(f"    path: {yaml_scalar(rel_posix(skill.skill_md) if skill.skill_md else None)}")
+        lines.append(f"    directory: {yaml_scalar(rel_posix(skill.directory))}")
+        lines.append(f"    validity: {yaml_scalar(skill.validity)}")
+        lines.append(f"    lifecycle: {yaml_scalar(skill.lifecycle)}")
+        lines.append(f"    description: {yaml_scalar(sanitize_inline(skill.description))}")
+        lines.append(f"    compatibility: {yaml_scalar(skill.compatibility)}")
+        lines.append(f"    allowed_tools: {yaml_scalar(skill.allowed_tools)}")
+        lines.append(f"    codex_metadata: {yaml_scalar(rel_posix(skill.codex_metadata) if skill.codex_metadata else None)}")
+        lines.append("    quality:")
+        lines.append(f"      eval_coverage: {yaml_scalar(skill.quality.eval_coverage)}")
+        lines.append(f"      has_trigger_evals: {str(skill.quality.has_trigger_evals).lower()}")
+        lines.append(f"      has_negative_trigger_evals: {str(skill.quality.has_negative_trigger_evals).lower()}")
+        lines.append(f"      has_assertions: {str(skill.quality.has_assertions).lower()}")
+        lines.append("    counts:")
+        lines.append(f"      lines: {skill.line_count}")
+        lines.append(f"      bytes: {skill.byte_count}")
+        lines.append(f"      scripts: {len(skill.scripts)}")
+        lines.append(f"      references: {len(skill.references)}")
+        lines.append(f"      assets: {len(skill.assets)}")
+        lines.append(f"      evals: {skill.eval_manifest.eval_count}")
+        lines.append("    warnings:")
+        if skill.warnings:
+            for warning in skill.warnings:
+                lines.append(f"      - {yaml_scalar(warning.code)}")
+        else:
+            lines.append("      []")
+        lines.append("    errors:")
+        if skill.errors:
+            for error in skill.errors:
+                lines.append(f"      - {yaml_scalar(error.code)}")
+        else:
+            lines.append("      []")
+    if not inv.skills:
+        lines.append("  []")
+    return "\n".join(lines)
+
+
+def skill_report_body(inv: SkillInventory, reviewed_date: str = SKILL_REGISTRY_REVIEWED) -> str:
+    warnings, errors = skill_inventory_diagnostics(inv)
+    valid = sum(1 for skill in inv.skills if skill.validity == "valid")
+    invalid = sum(1 for skill in inv.skills if skill.validity == "invalid")
+    lifecycle_counts = {item: sum(1 for skill in inv.skills if skill.lifecycle == item) for item in SKILL_LIFECYCLES}
+    eval_present = sum(1 for skill in inv.skills if skill.eval_manifest.exists)
+    symlink_count = sum(1 for item in inv.skipped if item.reason == "unmanaged-symlink-skill")
+    lines = [
+        "## Summary",
+        "",
+        f"- Source reviewed: {reviewed_date}",
+        f"- Root: `{sanitize_inline(inv.root.name)}`",
+        f"- Skills scanned: {len(inv.skills)}",
+        f"- Valid: {valid}",
+        f"- Invalid: {invalid}",
+        f"- Active: {lifecycle_counts.get('active', 0)}",
+        f"- Explicit draft: {lifecycle_counts.get('draft', 0)}",
+        f"- Deprecated: {lifecycle_counts.get('deprecated', 0)}",
+        f"- Eval manifests present: {eval_present}",
+        f"- Eval manifests missing: {len(inv.skills) - eval_present}",
+        f"- Unmanaged symlink skill directories: {symlink_count}",
+        "",
+        "## Action Required",
+        "",
+    ]
+    if errors:
+        for index, error in enumerate(errors, start=1):
+            lines.append(f"{index}. `{sanitize_inline(error.path)}`: {sanitize_inline(error.code)} - {sanitize_inline(error.message)}")
+    else:
+        lines.append("None.")
+    lines.extend(["", "## Warnings", ""])
+    if warnings:
+        for warning in warnings:
+            lines.append(f"- `{sanitize_inline(warning.path)}`: {sanitize_inline(warning.code)} - {sanitize_inline(warning.message)}")
+    else:
+        lines.append("None.")
+    lines.extend(["", "## Skills", ""])
+    for skill in inv.skills:
+        lines.append(f"### {sanitize_inline(skill.name)}")
+        lines.append("")
+        lines.append(f"- Validity: {skill.validity}")
+        lines.append(f"- Lifecycle: {skill.lifecycle}")
+        lines.append(f"- Path: `{sanitize_inline(rel_posix(skill.skill_md) if skill.skill_md else rel_posix(skill.directory))}`")
+        lines.append(f"- Eval coverage: {skill.quality.eval_coverage}")
+        lines.append(f"- Warnings: {', '.join(sorted({item.code for item in skill.warnings})) or 'none'}")
+        lines.append(f"- Errors: {', '.join(sorted({item.code for item in skill.errors})) or 'none'}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_skill_report(root: Path, reviewed_date: str = SKILL_REGISTRY_REVIEWED) -> str:
+    return generated_file_content(
+        skill_report_body(skill_inventory(root), reviewed_date),
+        "Skill Health Report",
+        MARKDOWN_MARKERS,
+    )
+
+
+def planned_skill_sync(root: Path, options: ScaffoldOptions, reviewed_date: str = SKILL_REGISTRY_REVIEWED) -> List[PlannedWrite]:
+    inv = skill_inventory(root)
+    registry_content = generated_file_content(skill_registry_body(inv, reviewed_date), None, YAML_MARKERS)
+    report_content = generated_file_content(skill_report_body(inv, reviewed_date), "Skill Health Report", MARKDOWN_MARKERS)
+    return [
+        classify_recreate(root, root / ".agents" / "skill-registry.yaml", registry_content, None, options, YAML_MARKERS),
+        classify_recreate(root, root / ".agents" / "skill-reports" / "skill-health.md", report_content, "Skill Health Report", options, MARKDOWN_MARKERS),
+    ]
+
+
+def skills_sync(root: Path, options: ScaffoldOptions, reviewed_date: str = SKILL_REGISTRY_REVIEWED) -> List[Tuple[str, Path]]:
+    planned = planned_skill_sync(root, options, reviewed_date)
+    if options.dry_run:
+        return [(f"would-{item.action}", item.path) for item in planned if item.write]
+    return apply_planned_writes(root, planned)
+
+
+def route_label_for_skill(root: Path, skill: SkillInfo) -> Optional[str]:
+    overrides, _errors = load_skill_overrides(root)
+    override = overrides.get(skill.name, {})
+    label = override.get("route_label")
+    if isinstance(label, str) and label.strip():
+        return sanitize_inline(label.strip())
+    if skill.lifecycle == "experimental" and not label:
+        return None
+    return sanitize_inline(skill.description.split(".")[0] or skill.name)
+
+
+def skill_routes_body(root: Path) -> str:
+    inv = skill_inventory(root)
+    if inv.errors:
+        first = inv.errors[0]
+        raise AgentContextError(f"cannot sync skill routes with inventory errors: {first.path}: {first.code}")
+    lines: List[str] = []
+    for skill in inv.skills:
+        if skill.validity != "valid" or skill.lifecycle in {"draft", "deprecated", "archived"}:
+            continue
+        if skill.lifecycle not in {"active", "watch", "experimental"}:
+            continue
+        label = route_label_for_skill(root, skill)
+        if not label:
+            continue
+        lines.append(f"- {label}: read `{rel_posix(skill.skill_md)}`.")
+    return "\n".join(lines) if lines else "- No active skill routes detected."
+
+
+def sync_skill_routes(root: Path, options: ScaffoldOptions) -> List[Tuple[str, Path]]:
+    path = root / ".agents" / "routing.md"
+    block = "## Skill Routes\n\n" + generated_block(skill_routes_body(root), SKILL_ROUTE_MARKERS)
+    if not path.exists():
+        planned = PlannedWrite(path, "# Agent Routing\n\n" + block, "created", False)
+    elif path.is_symlink() or not path.is_file():
+        raise AgentContextError(f"{path} is not a regular file; refusing to update routing")
+    else:
+        current = path.read_text(encoding="utf-8")
+        error = marker_error(path, current, SKILL_ROUTE_MARKERS)
+        if error:
+            raise AgentContextError(error)
+        if generated_block_span(current, SKILL_ROUTE_MARKERS) is not None:
+            updated = replace_generated_block(current, generated_block(skill_routes_body(root), SKILL_ROUTE_MARKERS), SKILL_ROUTE_MARKERS)
+            planned = PlannedWrite(path, updated, "updated-generated-block", should_snapshot_generated_update(root, path, current, SKILL_ROUTE_MARKERS))
+        else:
+            separator = "\n\n" if current.endswith("\n") else "\n\n"
+            planned = PlannedWrite(path, current + separator + block, "appended-generated-block", False)
+    if options.dry_run:
+        return [(f"would-{planned.action}", planned.path)] if planned.write else []
+    return apply_planned_writes(root, [planned])
+
+
+def check_skill_routes(root: Path) -> List[str]:
+    path = root / ".agents" / "routing.md"
+    if not path.exists():
+        return []
+    text = path.read_text(encoding="utf-8")
+    span = generated_block_span(text, SKILL_ROUTE_MARKERS)
+    if span is None:
+        return []
+    block = text[span.begin_start : span.end_end]
+    inv = skill_inventory(root)
+    errors = [f"{item.path}: {item.code}: {item.message}" for item in inv.errors]
+    by_path = {rel_posix(skill.skill_md): skill for skill in inv.skills if skill.skill_md is not None}
+    for ref in re.findall(r"`(\.agents/skills/[^`]+/SKILL\.md)`", block):
+        skill = by_path.get(ref)
+        if skill is None:
+            errors.append(f".agents/routing.md routes missing skill: {ref}")
+            continue
+        if skill.validity != "valid" or skill.lifecycle in {"draft", "deprecated", "archived"}:
+            errors.append(f".agents/routing.md routes inactive or invalid skill: {ref}")
+        if skill.lifecycle == "experimental" and route_label_for_skill(root, skill) is None:
+            errors.append(f".agents/routing.md routes experimental skill without explicit route_label: {ref}")
+    return errors
+
+
+def eval_plan_for_skill(skill: SkillInfo) -> Dict[str, object]:
+    return {
+        "skill": skill.name,
+        "workspace": rel_posix(Path(".agents/skill-workspaces") / skill.name / "iteration-1"),
+        "eval_count": skill.eval_manifest.eval_count,
+        "eval_ids": skill.eval_manifest.case_ids,
+        "will_run_agent": False,
+    }
+
+
+def skills_eval_plan(root: Path, skill_name: Optional[str] = None) -> Dict[str, object]:
+    inv = skill_inventory(root)
+    selected = [skill for skill in inv.skills if skill_name is None or skill.name == skill_name]
+    if skill_name is not None and not selected:
+        raise AgentContextError(f"skill not found: {skill_name}")
+    return {"root_name": root.name, "skills": [eval_plan_for_skill(skill) for skill in selected]}
+
+
+def next_workspace_iteration(root: Path, skill_name: str) -> Path:
+    base = root / ".agents" / "skill-workspaces" / skill_name
+    index = 1
+    while (base / f"iteration-{index}").exists():
+        index += 1
+    return base / f"iteration-{index}"
+
+
+def init_skill_workspace(root: Path, skill_name: str) -> List[Tuple[str, Path]]:
+    inv = skill_inventory(root)
+    matches = [skill for skill in inv.skills if skill.name == skill_name]
+    if not matches:
+        raise AgentContextError(f"skill not found: {skill_name}")
+    skill = matches[0]
+    workspace = next_workspace_iteration(root, skill_name)
+    changes: List[Tuple[str, Path]] = []
+    snapshot = workspace / "skill-snapshot"
+    snapshot.mkdir(parents=True, exist_ok=True)
+    if skill.skill_md is not None:
+        source = root / skill.skill_md
+        target = snapshot / "SKILL.md"
+        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        changes.append(("created", target))
+    for folder in ("references",):
+        source_dir = root / skill.directory / folder
+        if source_dir.is_dir() and not source_dir.is_symlink():
+            for current, dirs, files in os.walk(source_dir):
+                current_path = Path(current)
+                dirs[:] = sorted(dirname for dirname in dirs if not (current_path / dirname).is_symlink())
+                for file_name in sorted(files):
+                    source = current_path / file_name
+                    if source.is_symlink() or not source.is_file():
+                        continue
+                    source_rel = source.relative_to(root)
+                    if skip_file_reason(source, source_rel):
+                        continue
+                    rel = source.relative_to(source_dir)
+                    target = snapshot / folder / rel
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+                    changes.append(("created", target))
+    for case_id in skill.eval_manifest.case_ids or ["manual"]:
+        safe_id = re.sub(r"[^a-zA-Z0-9_.-]+", "-", case_id).strip("-") or "manual"
+        for mode in ("with_skill", "without_skill"):
+            case_dir = workspace / f"eval-{safe_id}" / mode
+            (case_dir / "outputs").mkdir(parents=True, exist_ok=True)
+            prompt = (
+                f"# Eval {case_id}\n\n"
+                f"Skill: {skill.name}\n"
+                f"Mode: {mode}\n\n"
+                "Fill in a task prompt from evals/evals.json manually. Raw prompts are not copied by SkillOps.\n"
+            )
+            (case_dir / "prompt.md").write_text(prompt, encoding="utf-8")
+            (case_dir / "grading-template.json").write_text(
+                json.dumps({"eval_id": case_id, "mode": mode, "assertions": []}, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            changes.append(("created", case_dir / "prompt.md"))
+            changes.append(("created", case_dir / "grading-template.json"))
+    (workspace / "benchmark-template.json").write_text(
+        json.dumps({"schema_version": 1, "skill": skill.name, "runs": []}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (workspace / "feedback.json").write_text(
+        json.dumps({"schema_version": 1, "skill": skill.name, "findings": []}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    changes.append(("created", workspace / "benchmark-template.json"))
+    changes.append(("created", workspace / "feedback.json"))
+    return changes
+
+
+def codex_eval_command(prompt: str, sandbox: str, full_auto: bool = False) -> List[str]:
+    if full_auto:
+        return ["codex", "exec", "--json", "--full-auto", prompt]
+    return ["codex", "exec", "--json", "--sandbox", sandbox, prompt]
+
+
+def under_skill_workspace(path: Path, root: Optional[Path] = None) -> bool:
+    resolved = path.resolve()
+    if root is not None:
+        workspace_root = (root / ".agents" / "skill-workspaces").resolve()
+        try:
+            resolved.relative_to(workspace_root)
+            return True
+        except ValueError:
+            return False
+    parts = resolved.parts
+    marker = (".agents", "skill-workspaces")
+    return any(parts[index : index + 2] == marker for index in range(max(0, len(parts) - 1)))
+
+
+def run_codex_eval(
+    prompt_path: Path,
+    output_path: Path,
+    sandbox: str,
+    understand_danger: bool,
+    full_auto: bool = False,
+    root: Optional[Path] = None,
+) -> List[str]:
+    if not under_skill_workspace(output_path, root):
+        raise AgentContextError("codex eval trace output must be under .agents/skill-workspaces")
+    if root is not None and not under_skill_workspace(prompt_path, root):
+        raise AgentContextError("codex eval prompt must be under .agents/skill-workspaces")
+    if sandbox == "danger-full-access":
+        if not understand_danger:
+            raise AgentContextError("danger-full-access requires --i-understand-danger")
+        if not under_skill_workspace(prompt_path, root):
+            raise AgentContextError("danger-full-access evals must run inside .agents/skill-workspaces")
+        print("warning: danger-full-access is suitable only for isolated CI/container environments")
+    prompt = prompt_path.read_text(encoding="utf-8")
+    cmd = codex_eval_command(prompt, sandbox, full_auto)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    output_path.write_text(result.stdout, encoding="utf-8")
+    if result.returncode != 0:
+        raise AgentContextError(f"codex eval failed with exit {result.returncode}: {result.stderr.strip()}")
+    return cmd
+
+
+def detect_agent() -> Tuple[str, Optional[str]]:
     """Detect the active agent runtime from exact-match environment variables.
 
     Returns (agent, matched_variable). Falls back to ("generic", None) when no
@@ -513,7 +1669,7 @@ def generated_block(body: str, markers: MarkerStyle = MARKDOWN_MARKERS) -> str:
 
 def generated_file_content(
     body: str,
-    heading: str | None = None,
+    heading: Optional[str] = None,
     markers: MarkerStyle = MARKDOWN_MARKERS,
 ) -> str:
     prefix = f"# {heading}\n\n" if heading else ""
@@ -549,14 +1705,14 @@ def marker_events(text: str, markers: MarkerStyle = MARKDOWN_MARKERS) -> list[tu
     return events
 
 
-def generated_block_span(text: str, markers: MarkerStyle = MARKDOWN_MARKERS) -> MarkerSpan | None:
+def generated_block_span(text: str, markers: MarkerStyle = MARKDOWN_MARKERS) -> Optional[MarkerSpan]:
     events = marker_events(text, markers)
     if len(events) != 2 or events[0][0] != "begin" or events[1][0] != "end":
         return None
     return MarkerSpan(events[0][1], events[1][2])
 
 
-def marker_error(path: Path, text: str, markers: MarkerStyle = MARKDOWN_MARKERS) -> str | None:
+def marker_error(path: Path, text: str, markers: MarkerStyle = MARKDOWN_MARKERS) -> Optional[str]:
     events = marker_events(text, markers)
     begin_count = sum(1 for kind, _, _ in events if kind == "begin")
     end_count = sum(1 for kind, _, _ in events if kind == "end")
@@ -642,7 +1798,7 @@ def generated_block_changed(
 def is_generated_only(
     path: Path,
     text: str,
-    heading: str | None,
+    heading: Optional[str],
     markers: MarkerStyle = MARKDOWN_MARKERS,
 ) -> bool:
     error = marker_error(path, text, markers)
@@ -668,7 +1824,7 @@ def in_git_repo(root: Path) -> bool:
     return git_run(root, ["rev-parse", "--is-inside-work-tree"]).returncode == 0
 
 
-def git_top(root: Path) -> Path | None:
+def git_top(root: Path) -> Optional[Path]:
     result = git_run(root, ["rev-parse", "--show-toplevel"])
     if result.returncode != 0:
         return None
@@ -691,7 +1847,7 @@ def git_clean(root: Path, path: Path) -> bool:
     return result.returncode == 0 and result.stdout.strip() == ""
 
 
-def git_head_text(root: Path, path: Path) -> str | None:
+def git_head_text(root: Path, path: Path) -> Optional[str]:
     result = git_run(root, ["show", f"HEAD:{git_rel(root, path)}"])
     if result.returncode != 0:
         return None
@@ -723,7 +1879,7 @@ def should_snapshot_generated_update(
     return generated_block_changed(root, path, current, markers)
 
 
-def merge_gemini_settings(current: str | None = None) -> str:
+def merge_gemini_settings(current: Optional[str] = None) -> str:
     if current is None:
         data: dict[str, object] = {}
     else:
@@ -779,9 +1935,9 @@ def classify_recreate(
     root: Path,
     path: Path,
     content: str,
-    heading: str | None,
+    heading: Optional[str],
     options: ScaffoldOptions,
-    markers: MarkerStyle | None = MARKDOWN_MARKERS,
+    markers: Optional[MarkerStyle] = MARKDOWN_MARKERS,
 ) -> PlannedWrite:
     if path.is_symlink():
         raise AgentContextError(f"{path} is a symlink; refusing to update scaffold target")
@@ -1008,7 +2164,7 @@ def profile_body(profile: str, active_agent: str) -> str:
     """
 
 
-def scaffold(root: Path, agent: str, options: ScaffoldOptions | None = None) -> list[tuple[str, Path]]:
+def scaffold(root: Path, agent: str, options: Optional[ScaffoldOptions] = None) -> list[tuple[str, Path]]:
     options = options or ScaffoldOptions()
     inv = inventory(root)
     active = detect_agent()[0] if agent == "auto" else agent
@@ -1086,7 +2242,6 @@ def check(root: Path) -> list[str]:
         root / ".agents" / "routing.md",
         root / ".agents" / "provider-registry.yaml",
         root / ".gemini" / "settings.json",
-        root / ".agents" / "skills",
     ]
     required.extend(root / ".agents" / "profiles" / f"{profile}.md" for profile in PROFILES)
     for path in required:
@@ -1153,6 +2308,8 @@ def check(root: Path) -> list[str]:
                     errors.append(f"{path.relative_to(root)} references missing directory: {ref}")
             elif not target.exists():
                 errors.append(f"{path.relative_to(root)} references missing path: {ref}")
+    errors.extend(check_skill_errors_only(root))
+    errors.extend(check_skill_routes(root))
     return errors
 
 
@@ -1202,12 +2359,98 @@ def print_inventory(root: Path, json_output: bool = False, explain_skips: bool =
             print(f"  - {item['path']}: {item['reason']}")
 
 
+def print_skills_inventory(root: Path, json_output: bool = False) -> None:
+    inv = skill_inventory(root)
+    if json_output:
+        print(json.dumps(skill_inventory_json(inv), indent=2, sort_keys=True))
+        return
+    print(f"{len(inv.skills)} skills found under .agents/skills")
+    for skill in inv.skills:
+        print(f"- {skill.name}: {skill.validity}, lifecycle={skill.lifecycle}, evals={skill.quality.eval_coverage}")
+    warnings, errors = skill_inventory_diagnostics(inv)
+    for warning in warnings:
+        print(f"warning: {warning.path}: {warning.code}: {warning.message}")
+    for error in errors:
+        print(f"error: {error.path}: {error.code}: {error.message}")
+
+
+def print_skills_check(root: Path) -> int:
+    inv = skill_inventory(root)
+    warnings, errors = skill_inventory_diagnostics(inv)
+    for warning in warnings:
+        print(f"warning: {warning.path}: {warning.code}: {warning.message}")
+    for error in errors:
+        print(f"error: {error.path}: {error.code}: {error.message}")
+    if errors:
+        return 1
+    print("skills check passed")
+    return 0
+
+
+def print_skills_report(root: Path, reviewed_date: str = SKILL_REGISTRY_REVIEWED) -> None:
+    print(render_skill_report(root, reviewed_date).rstrip())
+
+
+def print_changes(root: Path, changes: List[Tuple[str, Path]]) -> None:
+    if not changes:
+        print("no changes")
+        return
+    for action, path in changes:
+        print(f"{action}: {path.relative_to(root)}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     providers_parser = subparsers.add_parser("providers", help="list supported providers and bridges")
     providers_parser.add_argument("--json", action="store_true", help="print providers as JSON")
+
+    skills_parser = subparsers.add_parser("skills", help="inspect and maintain repository-local skills")
+    skills_subparsers = skills_parser.add_subparsers(dest="skills_command", required=True)
+
+    skills_inventory_parser = skills_subparsers.add_parser("inventory", help="list .agents/skills entries")
+    skills_inventory_parser.add_argument("root", nargs="?", default=".")
+    skills_inventory_parser.add_argument("--json", action="store_true", help="print skill inventory as JSON")
+
+    skills_check_parser = skills_subparsers.add_parser("check", help="validate .agents/skills entries")
+    skills_check_parser.add_argument("root", nargs="?", default=".")
+
+    skills_report_parser = skills_subparsers.add_parser("report", help="print the deterministic skill health report")
+    skills_report_parser.add_argument("root", nargs="?", default=".")
+    skills_report_parser.add_argument("--reviewed-date", default=SKILL_REGISTRY_REVIEWED)
+
+    skills_sync_parser = skills_subparsers.add_parser("sync", help="write the skill registry and health report")
+    skills_sync_parser.add_argument("root", nargs="?", default=".")
+    skills_sync_parser.add_argument("--dry-run", action="store_true", help="show planned writes without changing files")
+    skills_sync_parser.add_argument("--force-recreate", action="store_true", help="replace unmarked registry/report files")
+    skills_sync_parser.add_argument(
+        "--append-generated-block",
+        action="store_true",
+        help="append a generated block to an existing unmarked Markdown report",
+    )
+    skills_sync_parser.add_argument("--reviewed-date", default=SKILL_REGISTRY_REVIEWED)
+
+    skills_routes_parser = skills_subparsers.add_parser("routes", help="sync compact skill routes into .agents/routing.md")
+    skills_routes_parser.add_argument("root", nargs="?", default=".")
+    skills_routes_parser.add_argument("--dry-run", action="store_true", help="show planned writes without changing files")
+
+    skills_eval_parser = skills_subparsers.add_parser("eval", help="plan skill eval workspaces or run explicit Codex evals")
+    skills_eval_parser.add_argument("root", nargs="?", default=".")
+    skills_eval_parser.add_argument("--skill")
+    skills_eval_parser.add_argument("--plan", action="store_true", help="print eval workspace plan without creating files")
+    skills_eval_parser.add_argument("--init-workspace", action="store_true", help="create an eval workspace skeleton")
+    skills_eval_parser.add_argument("--runner", choices=("codex",), help="run an eval prompt with the named runner")
+    skills_eval_parser.add_argument("--prompt-file", help="prompt file inside a skill workspace")
+    skills_eval_parser.add_argument("--output-file", help="JSONL output path inside a skill workspace")
+    skills_eval_parser.add_argument(
+        "--sandbox",
+        default="read-only",
+        choices=("read-only", "workspace-write", "danger-full-access"),
+        help="sandbox passed to codex exec",
+    )
+    skills_eval_parser.add_argument("--i-understand-danger", action="store_true")
+    skills_eval_parser.add_argument("--full-auto", action="store_true", help="legacy alias for codex --full-auto")
 
     for name in ("inventory", "check", "scaffold"):
         sub = subparsers.add_parser(name)
@@ -1233,6 +2476,58 @@ def main() -> int:
     if args.command == "providers":
         print_providers(json_output=args.json)
         return 0
+    if args.command == "skills":
+        root = Path(args.root).resolve()
+        if not root.exists() or not root.is_dir():
+            parser.error(f"root is not a directory: {root}")
+        try:
+            if args.skills_command == "inventory":
+                print_skills_inventory(root, json_output=args.json)
+                return 0
+            if args.skills_command == "check":
+                return print_skills_check(root)
+            if args.skills_command == "report":
+                print_skills_report(root, args.reviewed_date)
+                return 0
+            if args.skills_command == "sync":
+                options = ScaffoldOptions(
+                    dry_run=args.dry_run,
+                    force_recreate=args.force_recreate,
+                    append_generated_block=args.append_generated_block,
+                )
+                print_changes(root, skills_sync(root, options, args.reviewed_date))
+                return 0
+            if args.skills_command == "routes":
+                options = ScaffoldOptions(dry_run=args.dry_run)
+                print_changes(root, sync_skill_routes(root, options))
+                return 0
+            if args.skills_command == "eval":
+                if args.plan or not (args.init_workspace or args.runner):
+                    print(json.dumps(skills_eval_plan(root, args.skill), indent=2, sort_keys=True))
+                    return 0
+                if args.init_workspace:
+                    if not args.skill:
+                        raise AgentContextError("--init-workspace requires --skill")
+                    print_changes(root, init_skill_workspace(root, args.skill))
+                    return 0
+                if args.runner == "codex":
+                    if not args.prompt_file or not args.output_file:
+                        raise AgentContextError("--runner codex requires --prompt-file and --output-file")
+                    if args.full_auto:
+                        print("warning: --full-auto is a legacy alias; prefer --sandbox workspace-write")
+                    command = run_codex_eval(
+                        Path(args.prompt_file).resolve(),
+                        Path(args.output_file).resolve(),
+                        args.sandbox,
+                        args.i_understand_danger,
+                        args.full_auto,
+                        root,
+                    )
+                    print("ran: " + " ".join(command[:4]))
+                    return 0
+        except AgentContextError as error:
+            print(f"refusing skills {args.skills_command}: {error}")
+            return 1
     root = Path(args.root).resolve()
     if not root.exists() or not root.is_dir():
         parser.error(f"root is not a directory: {root}")

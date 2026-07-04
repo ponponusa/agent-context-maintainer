@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Optional
 from unittest import mock
 
 
@@ -426,6 +427,558 @@ class AgentContextTests(unittest.TestCase):
             payload = json.loads(result.stdout)
             self.assertEqual(payload["root_name"], root.name)
             self.assertIn("README.md", payload["docs"])
+
+    def _write_skill(
+        self,
+        root: Path,
+        name: str = "code-review",
+        frontmatter: Optional[str] = None,
+        body: str = "# Code Review\n\nRead `references/guide.md`.\n",
+        evals: Optional[dict[str, object]] = None,
+    ) -> Path:
+        skill = root / ".agents" / "skills" / name
+        (skill / "references").mkdir(parents=True)
+        (skill / "references" / "guide.md").write_text("# Guide\n", encoding="utf-8")
+        if frontmatter is None:
+            frontmatter = (
+                "---\n"
+                f"name: {name}\n"
+                "description: Review code changes for correctness and regression risk. Use when asked to review diffs or PRs.\n"
+                "compatibility: Python 3.9+\n"
+                "metadata:\n"
+                "  agent-context-maintainer.status: active\n"
+                "---\n"
+            )
+        (skill / "SKILL.md").write_text(frontmatter + body, encoding="utf-8")
+        if evals is not None:
+            (skill / "evals").mkdir()
+            (skill / "evals" / "evals.json").write_text(json.dumps(evals), encoding="utf-8")
+        return skill
+
+    def test_skills_inventory_json_empty_when_no_skills(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = agent_context.skill_inventory_json(agent_context.skill_inventory(Path(tmp)))
+            self.assertEqual(payload["skill_count"], 0)
+            self.assertEqual(payload["skills"], [])
+
+    def test_skills_inventory_reads_valid_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_skill(
+                root,
+                evals={
+                    "schema_version": 1,
+                    "skill_name": "code-review",
+                    "evals": [
+                        {"id": "trigger", "kind": "trigger", "prompt": "Review this diff", "should_trigger": True, "assertions": ["triggers"]},
+                        {"id": "negative", "kind": "trigger", "prompt": "Write a poem", "should_trigger": False},
+                        {"id": "outcome", "kind": "outcome", "prompt": "Review this diff", "expected_output": "Finds risks", "assertions": ["risk"]},
+                    ],
+                },
+            )
+
+            inv = agent_context.skill_inventory(root)
+
+            self.assertEqual(len(inv.skills), 1)
+            skill = inv.skills[0]
+            self.assertEqual(skill.validity, "valid")
+            self.assertEqual(skill.lifecycle, "active")
+            self.assertEqual(skill.quality.eval_coverage, "present")
+            self.assertTrue(skill.quality.has_trigger_evals)
+            self.assertTrue(skill.quality.has_negative_trigger_evals)
+            self.assertTrue(skill.quality.has_assertions)
+
+    def test_skills_check_rejects_missing_skill_md(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".agents" / "skills" / "empty-skill").mkdir(parents=True)
+
+            _warnings, errors = agent_context.skill_inventory_diagnostics(agent_context.skill_inventory(root))
+
+            self.assertIn("missing-skill-md", {item.code for item in errors})
+
+    def test_skills_check_rejects_empty_skill_md(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = root / ".agents" / "skills" / "empty"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("", encoding="utf-8")
+
+            _warnings, errors = agent_context.skill_inventory_diagnostics(agent_context.skill_inventory(root))
+
+            codes = {item.code for item in errors}
+            self.assertIn("invalid-frontmatter", codes)
+            self.assertIn("missing-name", codes)
+            self.assertIn("missing-description", codes)
+
+    def test_skills_check_rejects_missing_description_and_name_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_skill(root, name="code-review", frontmatter="---\nname: other-skill\n---\n")
+
+            _warnings, errors = agent_context.skill_inventory_diagnostics(agent_context.skill_inventory(root))
+            codes = {item.code for item in errors}
+
+            self.assertIn("missing-description", codes)
+            self.assertIn("name-directory-mismatch", codes)
+
+    def test_skills_check_rejects_consecutive_hyphen_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_skill(root, name="bad--skill")
+
+            _warnings, errors = agent_context.skill_inventory_diagnostics(agent_context.skill_inventory(root))
+
+            self.assertIn("invalid-directory-name", {item.code for item in errors})
+            self.assertIn("invalid-name", {item.code for item in errors})
+
+    def test_skills_check_rejects_long_compatibility(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_skill(
+                root,
+                frontmatter=(
+                    "---\n"
+                    "name: code-review\n"
+                    "description: Review code changes for correctness. Use when asked to review diffs.\n"
+                    f"compatibility: {'x' * 501}\n"
+                    "---\n"
+                ),
+            )
+
+            _warnings, errors = agent_context.skill_inventory_diagnostics(agent_context.skill_inventory(root))
+
+            self.assertIn("long-compatibility", {item.code for item in errors})
+
+    def test_missing_evals_warns_without_draft_or_top_level_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_skill(root)
+
+            inv = agent_context.skill_inventory(root)
+            warnings, errors = agent_context.skill_inventory_diagnostics(inv)
+
+            self.assertEqual(inv.skills[0].lifecycle, "active")
+            self.assertIn("missing-evals", {item.code for item in warnings})
+            self.assertEqual(errors, [])
+            self.assertEqual(agent_context.check_skill_errors_only(root), [])
+
+    def test_top_level_check_does_not_require_agents_skills_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent_context.scaffold(root, "generic")
+            (root / ".agents" / "skills").rmdir()
+
+            self.assertEqual(agent_context.check(root), [])
+
+    def test_skill_frontmatter_supports_block_description(self) -> None:
+        text = "---\nname: docs-helper\ndescription: |\n  Review documentation changes.\n  Use when docs are updated.\n---\n# Body\n"
+
+        frontmatter, _body, errors, _warnings = agent_context.parse_skill_frontmatter(text)
+
+        self.assertEqual(errors, [])
+        self.assertIsNotNone(frontmatter)
+        self.assertIn("Use when", frontmatter.description)
+
+    def test_skill_frontmatter_unsupported_yaml_fails_required_fields(self) -> None:
+        text = "---\nname:\n  nested: nope\ndescription: [bad]\n---\n# Body\n"
+
+        frontmatter, _body, _errors, _warnings = agent_context.parse_skill_frontmatter(text)
+
+        self.assertIsNotNone(frontmatter)
+        self.assertIsNone(frontmatter.name)
+        self.assertIsNone(frontmatter.description)
+
+    def test_skill_frontmatter_malformed_quote_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_skill(
+                root,
+                name="bad",
+                frontmatter=(
+                    "---\n"
+                    "name: bad\n"
+                    "description: \"Review code changes carefully. Use when asked to review diffs.\n"
+                    "---\n"
+                ),
+            )
+
+            _warnings, errors = agent_context.skill_inventory_diagnostics(agent_context.skill_inventory(root))
+
+            self.assertIn("invalid-frontmatter", {item.code for item in errors})
+            self.assertIn("missing-description", {item.code for item in errors})
+
+    def test_eval_manifest_rejects_unsafe_input_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_skill(
+                root,
+                evals={
+                    "schema_version": 1,
+                    "skill_name": "code-review",
+                    "evals": [
+                        {"id": "abs", "kind": "outcome", "prompt": "x", "expected_output": "x", "input_files": ["/tmp/x"]},
+                        {"id": "parent", "kind": "outcome", "prompt": "x", "expected_output": "x", "input_files": ["../x"]},
+                        {"id": "secret", "kind": "outcome", "prompt": "x", "expected_output": "x", "input_files": ["evals/.env"]},
+                    ],
+                },
+            )
+            env_path = root / ".agents" / "skills" / "code-review" / "evals" / ".env"
+            env_path.write_text("TOKEN=x\n", encoding="utf-8")
+
+            _warnings, errors = agent_context.skill_inventory_diagnostics(agent_context.skill_inventory(root))
+
+            self.assertIn("unsafe-eval-input-file", {item.code for item in errors})
+
+    def test_eval_manifest_file_symlink_is_not_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = self._write_skill(root)
+            external = root / "external-evals.json"
+            external.write_text(json.dumps({"schema_version": 1, "skill_name": "code-review", "evals": []}), encoding="utf-8")
+            (skill / "evals").mkdir()
+            try:
+                (skill / "evals" / "evals.json").symlink_to(external)
+            except OSError:
+                self.skipTest("symlinks unavailable")
+
+            _warnings, errors = agent_context.skill_inventory_diagnostics(agent_context.skill_inventory(root))
+
+            self.assertIn("invalid-evals-json", {item.code for item in errors})
+
+    def test_eval_manifest_requires_skill_name_and_list_assertions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_skill(
+                root,
+                evals={
+                    "schema_version": 1,
+                    "evals": [
+                        {"id": "case", "kind": "outcome", "prompt": "x", "assertions": "not-a-list"},
+                    ],
+                },
+            )
+
+            _warnings, errors = agent_context.skill_inventory_diagnostics(agent_context.skill_inventory(root))
+            messages = "\n".join(item.message for item in errors)
+
+            self.assertIn("skill_name must match", messages)
+            self.assertIn("assertions must be a list", messages)
+
+    def test_eval_manifest_rejects_bool_schema_and_non_string_expected_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_skill(
+                root,
+                evals={
+                    "schema_version": True,
+                    "skill_name": "code-review",
+                    "evals": [
+                        {"id": "case", "kind": "outcome", "prompt": "x", "expected_output": 123},
+                    ],
+                },
+            )
+
+            _warnings, errors = agent_context.skill_inventory_diagnostics(agent_context.skill_inventory(root))
+            messages = "\n".join(item.message for item in errors)
+
+            self.assertIn("schema_version must be 1", messages)
+            self.assertIn("expected_output must be a string", messages)
+
+    def test_symlink_skill_directory_is_warning_not_followed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skills = root / ".agents" / "skills"
+            target = root / "outside-skill"
+            target.mkdir()
+            skills.mkdir(parents=True)
+            try:
+                (skills / "linked-skill").symlink_to(target)
+            except OSError:
+                self.skipTest("symlinks unavailable")
+
+            inv = agent_context.skill_inventory(root)
+            warnings, errors = agent_context.skill_inventory_diagnostics(inv)
+
+            self.assertEqual(inv.skills, [])
+            self.assertEqual(errors, [])
+            self.assertIn("unmanaged-symlink-skill", {item.code for item in warnings})
+
+    def test_symlink_skills_root_is_warning_not_followed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = root / "outside-skills"
+            outside.mkdir()
+            agents = root / ".agents"
+            agents.mkdir()
+            try:
+                (agents / "skills").symlink_to(outside)
+            except OSError:
+                self.skipTest("symlinks unavailable")
+
+            inv = agent_context.skill_inventory(root)
+            warnings, errors = agent_context.skill_inventory_diagnostics(inv)
+
+            self.assertEqual(inv.skills, [])
+            self.assertEqual(errors, [])
+            self.assertIn("unmanaged-symlink-skill", {item.code for item in warnings})
+
+    def test_symlink_agents_parent_is_warning_not_followed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = root / "outside-agents"
+            (outside / "skills").mkdir(parents=True)
+            try:
+                (root / ".agents").symlink_to(outside)
+            except OSError:
+                self.skipTest("symlinks unavailable")
+
+            inv = agent_context.skill_inventory(root)
+            warnings, errors = agent_context.skill_inventory_diagnostics(inv)
+
+            self.assertEqual(inv.skills, [])
+            self.assertEqual(errors, [])
+            self.assertIn("unmanaged-symlink-skill", {item.code for item in warnings})
+
+    def test_symlink_skill_md_is_not_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            external = root / "external.md"
+            external.write_text(
+                "---\nname: link-skill\ndescription: Review code. Use when asked to review diffs.\n---\n# Link\n",
+                encoding="utf-8",
+            )
+            skill = root / ".agents" / "skills" / "link-skill"
+            skill.mkdir(parents=True)
+            try:
+                (skill / "SKILL.md").symlink_to(external)
+            except OSError:
+                self.skipTest("symlinks unavailable")
+
+            _warnings, errors = agent_context.skill_inventory_diagnostics(agent_context.skill_inventory(root))
+
+            self.assertIn("unsafe-local-reference", {item.code for item in errors})
+
+    def test_symlink_components_in_references_and_eval_inputs_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = self._write_skill(
+                root,
+                body="# Skill\n\nRead [guide](references/linkdir/guide.md).\n",
+                evals={
+                    "schema_version": 1,
+                    "skill_name": "code-review",
+                    "evals": [
+                        {
+                            "id": "case",
+                            "kind": "outcome",
+                            "prompt": "x",
+                            "expected_output": "x",
+                            "input_files": ["evals/linkdir/input.md"],
+                        }
+                    ],
+                },
+            )
+            (skill / "references" / "real").mkdir()
+            (skill / "references" / "real" / "guide.md").write_text("# Real\n", encoding="utf-8")
+            (skill / "evals" / "real").mkdir()
+            (skill / "evals" / "real" / "input.md").write_text("input\n", encoding="utf-8")
+            try:
+                (skill / "references" / "linkdir").symlink_to(skill / "references" / "real")
+                (skill / "evals" / "linkdir").symlink_to(skill / "evals" / "real")
+            except OSError:
+                self.skipTest("symlinks unavailable")
+
+            _warnings, errors = agent_context.skill_inventory_diagnostics(agent_context.skill_inventory(root))
+
+            codes = {item.code for item in errors}
+            self.assertIn("unsafe-local-reference", codes)
+            self.assertIn("unsafe-eval-input-file", codes)
+
+    def test_file_uri_reference_is_unsafe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_skill(root, body="# Skill\n\nRead [secret](file:///etc/passwd).\n")
+
+            _warnings, errors = agent_context.skill_inventory_diagnostics(agent_context.skill_inventory(root))
+
+            self.assertIn("unsafe-local-reference", {item.code for item in errors})
+
+    def test_skills_inventory_json_cli_and_check_exit_one(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_skill(root, frontmatter="---\nname: code-review\n---\n")
+
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "agent_context.py"), "skills", "inventory", str(root), "--json"],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["skill_count"], 1)
+
+            check_result = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "agent_context.py"), "skills", "check", str(root)],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual(check_result.returncode, 1)
+            self.assertIn("missing-description", check_result.stdout)
+
+    def test_skills_sync_writes_registry_and_report_idempotently(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_skill(root)
+
+            agent_context.skills_sync(root, agent_context.ScaffoldOptions())
+            first_registry = (root / ".agents" / "skill-registry.yaml").read_text(encoding="utf-8")
+            first_report = (root / ".agents" / "skill-reports" / "skill-health.md").read_text(encoding="utf-8")
+            changes = agent_context.skills_sync(root, agent_context.ScaffoldOptions())
+
+            self.assertEqual(changes, [])
+            self.assertEqual(first_registry, (root / ".agents" / "skill-registry.yaml").read_text(encoding="utf-8"))
+            self.assertEqual(first_report, (root / ".agents" / "skill-reports" / "skill-health.md").read_text(encoding="utf-8"))
+            self.assertIn('source_reviewed: "2026-07-04"', first_registry)
+
+    def test_skills_sync_preserves_human_content_and_refuses_unmarked_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_skill(root)
+            report = root / ".agents" / "skill-reports" / "skill-health.md"
+            report.parent.mkdir(parents=True)
+            report.write_text("# Human Report\n\nKeep me.\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(agent_context.AgentContextError, "no generated block marker"):
+                agent_context.skills_sync(root, agent_context.ScaffoldOptions())
+
+            agent_context.skills_sync(root, agent_context.ScaffoldOptions(append_generated_block=True))
+            self.assertIn("Keep me.", report.read_text(encoding="utf-8"))
+
+    def test_skills_eval_plan_and_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_skill(
+                root,
+                evals={"schema_version": 1, "skill_name": "code-review", "evals": [{"id": "case-one", "kind": "trigger", "prompt": "Review", "should_trigger": False}]},
+            )
+
+            plan = agent_context.skills_eval_plan(root, "code-review")
+            changes = agent_context.init_skill_workspace(root, "code-review")
+            inv = agent_context.inventory(root, explain_skips=True)
+
+            self.assertEqual(plan["skills"][0]["eval_ids"], ["case-one"])
+            self.assertTrue(any(str(path).endswith("prompt.md") for _action, path in changes))
+            self.assertIn({"path": ".agents/skill-workspaces/", "reason": "tool-workspace-directory"}, inv["skipped"])
+
+    def test_skills_eval_workspace_skips_secret_like_references(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = self._write_skill(root)
+            (skill / "references" / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+
+            agent_context.init_skill_workspace(root, "code-review")
+
+            copied = list((root / ".agents" / "skill-workspaces").rglob(".env"))
+            self.assertEqual(copied, [])
+
+    def test_skill_overrides_and_routing_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_skill(root)
+            (root / ".agents").mkdir(exist_ok=True)
+            (root / ".agents" / "routing.md").write_text("# Agent Routing\n", encoding="utf-8")
+            (root / ".agents" / "skill-overrides.json").write_text(
+                json.dumps({"code-review": {"lifecycle": "deprecated", "route_label": "Code review"}}),
+                encoding="utf-8",
+            )
+
+            agent_context.sync_skill_routes(root, agent_context.ScaffoldOptions())
+            text = (root / ".agents" / "routing.md").read_text(encoding="utf-8")
+
+            self.assertNotIn(".agents/skills/code-review/SKILL.md", text)
+            self.assertEqual(agent_context.check_skill_routes(root), [])
+
+    def test_experimental_route_without_label_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_skill(root)
+            routing = root / ".agents" / "routing.md"
+            routing.parent.mkdir(parents=True, exist_ok=True)
+            routing.write_text(
+                "# Agent Routing\n\n"
+                "## Skill Routes\n\n"
+                "<!-- agent-context-maintainer:skills-begin -->\n"
+                "- Code review: read `.agents/skills/code-review/SKILL.md`.\n"
+                "<!-- agent-context-maintainer:skills-end -->\n",
+                encoding="utf-8",
+            )
+            (root / ".agents" / "skill-overrides.json").write_text(
+                json.dumps({"code-review": {"lifecycle": "experimental"}}),
+                encoding="utf-8",
+            )
+
+            self.assertTrue(agent_context.check_skill_routes(root))
+
+    def test_invalid_skill_overrides_block_route_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_skill(root)
+            (root / ".agents" / "skill-overrides.json").write_text("{bad json", encoding="utf-8")
+
+            with self.assertRaisesRegex(agent_context.AgentContextError, "inventory errors"):
+                agent_context.skill_routes_body(root)
+
+    def test_codex_runner_command_and_danger_flag(self) -> None:
+        self.assertEqual(
+            agent_context.codex_eval_command("hello", "workspace-write"),
+            ["codex", "exec", "--json", "--sandbox", "workspace-write", "hello"],
+        )
+        self.assertEqual(
+            agent_context.codex_eval_command("hello", "workspace-write", full_auto=True),
+            ["codex", "exec", "--json", "--full-auto", "hello"],
+        )
+
+    def test_codex_runner_constrains_trace_output_to_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prompt = root / ".agents" / "skill-workspaces" / "code-review" / "iteration-1" / "eval-case" / "with_skill" / "prompt.md"
+            prompt.parent.mkdir(parents=True)
+            prompt.write_text("hello", encoding="utf-8")
+            outside = root / "trace.jsonl"
+
+            with self.assertRaisesRegex(agent_context.AgentContextError, "trace output"):
+                agent_context.run_codex_eval(prompt, outside, "workspace-write", False)
+
+    def test_codex_runner_constrains_paths_to_requested_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            other = Path(tmp) / "other"
+            prompt = other / ".agents" / "skill-workspaces" / "code-review" / "iteration-1" / "eval-case" / "with_skill" / "prompt.md"
+            output = other / ".agents" / "skill-workspaces" / "code-review" / "iteration-1" / "eval-case" / "with_skill" / "outputs" / "trace.jsonl"
+            prompt.parent.mkdir(parents=True)
+            root.mkdir()
+            prompt.write_text("hello", encoding="utf-8")
+
+            with self.assertRaisesRegex(agent_context.AgentContextError, "trace output"):
+                agent_context.run_codex_eval(prompt, output, "workspace-write", False, root=root)
+
+    def test_codex_runner_warns_for_danger_full_access(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prompt = root / ".agents" / "skill-workspaces" / "code-review" / "iteration-1" / "eval-case" / "with_skill" / "prompt.md"
+            output = prompt.parent / "outputs" / "trace.jsonl"
+            prompt.parent.mkdir(parents=True)
+            prompt.write_text("hello", encoding="utf-8")
+            completed = subprocess.CompletedProcess(["codex"], 0, stdout="{}\n", stderr="")
+
+            with mock.patch("agent_context.subprocess.run", return_value=completed), mock.patch("builtins.print") as printed:
+                agent_context.run_codex_eval(prompt, output, "danger-full-access", True, root=root)
+
+            self.assertTrue(any("danger-full-access" in str(call) for call in printed.call_args_list))
 
 
 if __name__ == "__main__":
