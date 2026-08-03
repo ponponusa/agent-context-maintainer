@@ -191,6 +191,24 @@ description: What this task skill does and when to use it.
 
 Task skills should reference core policy rather than duplicate it.
 
+Structure skill content for progressive disclosure. Hosts load skill context in
+stages: the initial skill listing carries only `name` and `description` (Codex
+also includes the path), the full SKILL.md body is loaded when the skill is
+selected, and bundled files are read only when the agent decides it needs them.
+Keep the SKILL.md body a skeleton of the procedure (consistent with the
+existing 500-line warning) and move detailed material into `references/`,
+linked from SKILL.md by relative path.
+
+Subfolder roles inside a skill directory:
+
+- `scripts/` holds deterministic helper scripts the skill invokes.
+- `references/` holds detail documents read on demand.
+- `assets/` holds bundled templates and other non-instruction files.
+
+Relative references from SKILL.md into these folders are validated by
+`skills check`, which rejects symlink crossings, directory escapes, and
+missing targets.
+
 ## Safety Model
 
 Inventory must skip:

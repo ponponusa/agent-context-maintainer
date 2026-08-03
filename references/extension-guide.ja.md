@@ -191,6 +191,24 @@ description: What this task skill does and when to use it.
 
 Task skill は core policy を複製せず、参照する形にします。
 
+Skill content は progressive disclosure を前提に構成します。ホストは skill
+context を段階的にロードします: 初期の skill 一覧に載るのは `name` と
+`description` だけで(Codex は path も含む)、SKILL.md 本文の全文は skill が
+選択されたときにロードされ、同梱ファイルはエージェントが必要と判断したとき
+だけ読まれます。SKILL.md 本文は手順の骨子に留め(既存の 500 行 warning と
+整合)、詳細資料は `references/` 配下に置いて SKILL.md から相対パスで参照
+します。
+
+Skill directory 内の subfolder の役割:
+
+- `scripts/` には skill が呼び出す決定的な補助スクリプトを置きます。
+- `references/` には必要時に読まれる詳細ドキュメントを置きます。
+- `assets/` には template などの同梱物(指示以外のファイル)を置きます。
+
+SKILL.md からこれらの folder への相対参照は `skills check` の
+local-reference 検証が対象とし、symlink 越え・ディレクトリ脱出・参照先欠損を
+拒否します。
+
 ## Safety Model
 
 Inventory は次を skip します。
