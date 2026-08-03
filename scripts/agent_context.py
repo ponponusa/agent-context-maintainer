@@ -30,9 +30,13 @@ PROVIDERS: dict[str, dict[str, object]] = {
             "Use scoped patches and preserve unrelated user changes.",
             "Run focused validation and report exact commands.",
             "Create durable repo-local artifacts for long-running work.",
+            "Custom subagents may be defined in `.codex/agents/*.toml`; read them before changing delegation behavior. Do not treat `.codex/rules/` as instructions — it is an exec-policy allowlist.",
         ],
         "bridge_files": ["AGENTS.md"],
-        "source_urls": ["https://agents.md/"],
+        "source_urls": [
+            "https://agents.md/",
+            "https://learn.chatgpt.com/docs/agent-configuration/subagents",
+        ],
         # Only set while Codex sandboxing is active; unsandboxed Codex
         # sessions fall back to generic and should pass --agent codex.
         "detect_env": ["CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED"],
@@ -43,9 +47,13 @@ PROVIDERS: dict[str, dict[str, object]] = {
             "Use strengths in long-form design review and cross-document reconciliation.",
             "State assumptions and open questions explicitly.",
             "Convert analysis into concrete edits when implementation is requested.",
+            "Custom subagents may be defined in `.claude/agents/*.md`; read them before changing delegation behavior.",
         ],
         "bridge_files": ["CLAUDE.md", "AGENTS.md"],
-        "source_urls": ["https://code.claude.com/docs/en/memory"],
+        "source_urls": [
+            "https://code.claude.com/docs/en/memory",
+            "https://code.claude.com/docs/en/sub-agents",
+        ],
         "detect_env": ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"],
     },
     "gemini": {
@@ -54,10 +62,12 @@ PROVIDERS: dict[str, dict[str, object]] = {
             "Use broad-context synthesis across docs and manifests.",
             "Attribute repository facts to checked local files.",
             "Verify current local state before treating recalled context as fact.",
+            "Custom subagents may be defined in `.gemini/agents/*.md`; read them before changing delegation behavior.",
         ],
         "bridge_files": ["GEMINI.md", ".gemini/settings.json", "AGENTS.md"],
         "source_urls": [
-            "https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/configuration.md"
+            "https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/configuration.md",
+            "https://github.com/google-gemini/gemini-cli/blob/main/docs/core/subagents.md",
         ],
         "detect_env": ["GEMINI_CLI"],
     },
@@ -78,10 +88,12 @@ PROVIDERS: dict[str, dict[str, object]] = {
             "Prefer concise repository-wide guidance that reduces cloud-agent exploration.",
             "Keep task-specific instructions out of `.github/copilot-instructions.md`.",
             "Use `AGENTS.md` and the nearest applicable routed skill for deeper workflow details.",
+            "Custom subagents may be defined in `.github/agents/*.agent.md`; read them before changing delegation behavior.",
         ],
         "bridge_files": [".github/copilot-instructions.md", "AGENTS.md"],
         "source_urls": [
-            "https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/add-custom-instructions/add-repository-instructions"
+            "https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/add-custom-instructions/add-repository-instructions",
+            "https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/customize-cloud-agent/create-custom-agents",
         ],
         "detect_env": [],
     },
@@ -2228,6 +2240,7 @@ def routing_body(inv: dict[str, object]) -> str:
     - Implementation: inspect manifests, existing patterns, and nearest tests before editing.
     - Documentation: reconcile private planning docs with public docs when both exist.
     - Security or privacy: read security guidance before changing storage, logging, sync, or agent-context behavior.
+    - Changing or adding custom subagent definitions: read the provider's native agents directory listed in your profile.
     - New repeated workflow: create or update `.agents/skills/<task>/SKILL.md`.
 
     ## Detected Tests

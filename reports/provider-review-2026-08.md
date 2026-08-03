@@ -73,9 +73,14 @@ pages had not migrated as of 2026-08-03 and are cited at their
 
 ## Follow-ups
 
-- **Subagent source URLs in `PROVIDERS`**: the four subagent documentation URLs
-  above are planned additions to `PROVIDERS` `source_urls` (with profile and
-  routing wording) in a follow-up change recorded in this report when it lands.
+- **Subagent source URLs in `PROVIDERS`** — done 2026-08-04: the four subagent
+  documentation URLs above were added to `PROVIDERS` `source_urls`, the
+  codex / claude / gemini / copilot profile bullets now point to the native
+  agents directories (with the exec-policy caution for `.codex/rules/`), and
+  `.agents/routing.md` gained a subagent-definition route.
+  `PROVIDER_REGISTRY_REVIEWED` was re-confirmed at `2026-08-04` together with
+  this change. Native directories are mentioned conditionally ("may be
+  defined"); the tool does not create or existence-check them.
 - **Nested AGENTS.md (monorepo, nearest wins)**: agents.md and Copilot both
   read nested `AGENTS.md` files; this tool assumes a single root `AGENTS.md`.
   Backlog, revisit with a golden-file update.

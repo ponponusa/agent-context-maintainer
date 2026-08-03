@@ -28,6 +28,16 @@
 
 ### Changed
 
+- **Generated output**: the codex / claude / gemini / copilot profiles now
+  mention the provider's native custom subagent directory
+  (`.codex/agents/*.toml`, `.claude/agents/*.md`, `.gemini/agents/*.md`,
+  `.github/agents/*.agent.md`) with a "read before changing delegation
+  behavior" note, and the codex profile warns that `.codex/rules/` is an
+  exec-policy allowlist, not instructions. `.agents/routing.md` gains a
+  "Changing or adding custom subagent definitions" route, and the provider
+  registry gains one subagent documentation source URL per affected provider.
+  `AGENTS.md` stays provider-neutral, and no native directory is created or
+  existence-checked. The next `scaffold` run rewrites the managed blocks once.
 - Provider registry review refreshed: `reports/provider-review-2026-08.md`
   records the 2026-08-03 platform facts (custom subagent locations for four
   providers, path-scoped instruction rules, skill listing budgets, the
