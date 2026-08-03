@@ -2,6 +2,30 @@
 
 ## Unreleased — 2026-08-04
 
+### Added
+
+- `skills check` / `skills report` now verify the Codex skill adapter file
+  itself: a symlinked `agents/openai.yaml` warns `codex-metadata-symlink`, and
+  a non-regular, binary, oversized, or invalid-UTF-8 adapter warns
+  `codex-metadata-unreadable`. Readable adapters keep the existing
+  `codex-metadata-unparsed` warning, and the adapter path stays recorded in
+  the inventory and registry in all cases.
+- Skill listing budget checks (warnings only, sourced from
+  `reports/provider-review-2026-08.md`):
+  - `long-listing-entry` — per skill, when combined `description` +
+    `when_to_use` exceed 1,536 characters (Claude Code truncates the listing
+    entry; the host-side limit is configurable via
+    `skillListingMaxDescChars`). `when_to_use` is now a typed
+    `SkillFrontmatter` field; skills without it are unaffected.
+  - `listing-budget-estimate` — across all valid skills, when the estimated
+    Codex listing (names + descriptions + paths) exceeds the 8,000-character
+    fallback budget. The message states it is a fallback estimate; the real
+    budget is 2% of the context window. No always-on estimate line is added,
+    so within-budget repositories see unchanged `skills report` /
+    skill-health.md output; over-budget repositories gain the warning in both.
+- Eval workspace snapshots (`skills eval --init-workspace`) now skip files
+  that are not valid UTF-8 instead of crashing mid-copy.
+
 ### Changed
 
 - Provider registry review refreshed: `reports/provider-review-2026-08.md`

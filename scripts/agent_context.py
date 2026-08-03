@@ -240,6 +240,15 @@ BACKTICK_LOCAL_PATH_RE = re.compile(r"`((?:scripts|references|assets|evals)/[^`]
 NEGATION_RE = re.compile(r"\b(do not|don't|never|avoid|must not|should not)\b", re.I)
 RISK_RE = re.compile(r"\b(\.env|secret|secrets|token|tokens|credential|credentials|raw\s+logs?)\b", re.I)
 MAX_SKILL_DESCRIPTION_CHARS = 1024
+# Claude Code truncates each listing entry's combined description +
+# when_to_use at 1,536 characters (configurable host-side via
+# skillListingMaxDescChars); see reports/provider-review-2026-08.md.
+MAX_SKILL_LISTING_ENTRY_CHARS = 1536
+# Codex truncates the whole skill listing (names, descriptions, paths) at 2%
+# of the context window and falls back to 8,000 characters when the window is
+# unknown; see reports/provider-review-2026-08.md. Static checks can only
+# estimate against the fallback value.
+CODEX_LISTING_FALLBACK_BUDGET_CHARS = 8000
 MAX_SKILL_COMPATIBILITY_CHARS = 500
 MAX_SKILL_MAIN_LINES = 500
 MAX_SKILL_MD_BYTES = 1_000_000
@@ -316,6 +325,7 @@ class SkillFrontmatter:
     compatibility: Optional[str]
     license: Optional[str]
     allowed_tools: Optional[str]
+    when_to_use: Optional[str]
     metadata: Dict[str, str]
     raw: Dict[str, Any]
 
@@ -405,6 +415,19 @@ def is_binary_file(path: Path) -> bool:
     except OSError:
         return True
     return b"\0" in chunk
+
+
+def read_utf8_text(path: Path) -> Optional[str]:
+    """Read a file as UTF-8, returning None instead of raising.
+
+    is_binary_file() only detects NUL bytes in the first 4096 bytes, so
+    invalid UTF-8 passes skip_file_reason(); callers that need decodable text
+    must attempt the read explicitly.
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 def git_ignored_paths(root: Path, paths: list[Path]) -> set[str]:
@@ -716,6 +739,7 @@ def parse_skill_frontmatter(text: str) -> Tuple[Optional[SkillFrontmatter], str,
         compatibility=raw.get("compatibility") if isinstance(raw.get("compatibility"), str) else None,
         license=raw.get("license") if isinstance(raw.get("license"), str) else None,
         allowed_tools=raw.get("allowed-tools") if isinstance(raw.get("allowed-tools"), str) else None,
+        when_to_use=raw.get("when_to_use") if isinstance(raw.get("when_to_use"), str) else None,
         metadata=metadata,
         raw=raw,
     )
@@ -1081,6 +1105,15 @@ def validate_skill_directory(root: Path, skill_dir: Path) -> SkillInfo:
                 warnings.append(diag(rel_skill_md, "missing-trigger-boundary", "description should describe when to use the skill"))
             if compatibility is not None and len(compatibility) > MAX_SKILL_COMPATIBILITY_CHARS:
                 errors.append(diag(rel_skill_md, "long-compatibility", "compatibility exceeds 500 characters"))
+            if len(description) + len(frontmatter.when_to_use or "") > MAX_SKILL_LISTING_ENTRY_CHARS:
+                warnings.append(
+                    diag(
+                        rel_skill_md,
+                        "long-listing-entry",
+                        f"combined description and when_to_use exceed {MAX_SKILL_LISTING_ENTRY_CHARS} characters "
+                        "(Claude Code truncates the listing entry)",
+                    )
+                )
             lifecycle_value = explicit_lifecycle(frontmatter)
             if lifecycle_value and lifecycle_value not in SKILL_LIFECYCLES:
                 warnings.append(diag(rel_skill_md, "invalid-lifecycle", "unknown lifecycle metadata; defaulting to active"))
@@ -1110,7 +1143,19 @@ def validate_skill_directory(root: Path, skill_dir: Path) -> SkillInfo:
     codex_metadata_path = skill_dir / "agents" / "openai.yaml"
     codex_metadata = root_rel / "agents/openai.yaml" if codex_metadata_path.exists() else None
     if codex_metadata is not None:
-        warnings.append(diag(codex_metadata, "codex-metadata-unparsed", "agents/openai.yaml exists but is not parsed"))
+        # The inventory records that the adapter exists (the path stays in
+        # codex_metadata) even when it cannot be read; the warnings below make
+        # the unreadable cases explicit instead of hiding them.
+        if codex_metadata_path.is_symlink():
+            warnings.append(diag(codex_metadata, "codex-metadata-symlink", "agents/openai.yaml is a symlink and was not read"))
+        else:
+            skip = skip_file_reason(codex_metadata_path, codex_metadata)
+            if skip:
+                warnings.append(diag(codex_metadata, "codex-metadata-unreadable", f"agents/openai.yaml is not safe to read: {skip}"))
+            elif read_utf8_text(codex_metadata_path) is None:
+                warnings.append(diag(codex_metadata, "codex-metadata-unreadable", "agents/openai.yaml is not valid UTF-8 or could not be read"))
+            else:
+                warnings.append(diag(codex_metadata, "codex-metadata-unparsed", "agents/openai.yaml exists but is not parsed"))
     quality = skill_manifest_quality(eval_manifest)
     lifecycle = "active"
     lifecycle_value = explicit_lifecycle(frontmatter)
@@ -1286,6 +1331,20 @@ def skill_inventory_diagnostics(inv: SkillInventory) -> Tuple[List[SkillDiagnost
     for skill in inv.skills:
         warnings.extend(skill.warnings)
         errors.extend(skill.errors)
+    listing_estimate = sum(
+        len(skill.name) + len(skill.description) + len(rel_posix(skill.skill_md))
+        for skill in inv.skills
+        if skill.validity == "valid" and skill.skill_md is not None
+    )
+    if listing_estimate > CODEX_LISTING_FALLBACK_BUDGET_CHARS:
+        warnings.append(
+            SkillDiagnostic(
+                ".agents/skills",
+                "listing-budget-estimate",
+                f"estimated Codex skill listing is {listing_estimate} chars and exceeds "
+                f"{CODEX_LISTING_FALLBACK_BUDGET_CHARS} chars (fallback estimate; the real budget is 2% of the context window)",
+            )
+        )
     return warnings, errors
 
 
@@ -1567,9 +1626,11 @@ def init_skill_workspace(root: Path, skill_name: str) -> List[Tuple[str, Path]]:
     snapshot.mkdir(parents=True, exist_ok=True)
     if skill.skill_md is not None:
         source = root / skill.skill_md
-        target = snapshot / "SKILL.md"
-        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
-        changes.append(("created", target))
+        text = read_utf8_text(source)
+        if text is not None:
+            target = snapshot / "SKILL.md"
+            target.write_text(text, encoding="utf-8")
+            changes.append(("created", target))
     for folder in ("references",):
         source_dir = root / skill.directory / folder
         if source_dir.is_dir() and not source_dir.is_symlink():
@@ -1583,10 +1644,13 @@ def init_skill_workspace(root: Path, skill_name: str) -> List[Tuple[str, Path]]:
                     source_rel = source.relative_to(root)
                     if skip_file_reason(source, source_rel):
                         continue
+                    text = read_utf8_text(source)
+                    if text is None:
+                        continue
                     rel = source.relative_to(source_dir)
                     target = snapshot / folder / rel
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+                    target.write_text(text, encoding="utf-8")
                     changes.append(("created", target))
     for case_id in skill.eval_manifest.case_ids or ["manual"]:
         safe_id = re.sub(r"[^a-zA-Z0-9_.-]+", "-", case_id).strip("-") or "manual"
