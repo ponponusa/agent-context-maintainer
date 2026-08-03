@@ -209,6 +209,28 @@ SKILL.md からこれらの folder への相対参照は `skills check` の
 local-reference 検証が対象とし、symlink 越え・ディレクトリ脱出・参照先欠損を
 拒否します。
 
+## SkillOps Validation Scope
+
+`skills check` と `skills eval` の次の 2 つの境界は、ギャップではなく
+意図した決定です。
+
+- **`agents/openai.yaml` は検出するが、スキーマは検証しません。**
+  `skills check` は adapter ファイル自体(通常ファイルであること、symlink で
+  ないこと、安全に読めること、UTF-8 として妥当であること)を検証したうえで
+  `codex-metadata-unparsed` を報告します。この warning は仕様であり、欠陥では
+  ありません。完全なスキーマ検証にはネストした YAML パーサ(2 階層までの map +
+  scalar map の list)か YAML 依存の追加が必要で、dependency-free 原則と衝突
+  します。同梱の限定パーサは、利用者が実際に `openai.yaml` を書き、検証を
+  必要とするようになった時点で再検討します。adapter のスキーマ事実は
+  `reports/provider-review-2026-08.md` に記録されています。
+- **Eval workspace snapshot は `references/` のみコピーします。** snapshot の
+  コピーは UTF-8 テキスト前提(`read_text` / `write_text` + inventory と同じ
+  secret / binary / サイズ / symlink 除外)で、これが secret と binary の境界を
+  強制可能にしています。`scripts/` を含めるには実行権限の保持が、`assets/` は
+  バイナリデータを含み得るため、いずれもサイズ上限を備えた byte copy 設計が
+  先に必要です。snapshot の範囲拡張は、`skills eval --runner codex` に実運用の
+  需要が出てから行います。
+
 ## Safety Model
 
 Inventory は次を skip します。

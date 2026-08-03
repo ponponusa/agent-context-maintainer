@@ -209,6 +209,29 @@ Relative references from SKILL.md into these folders are validated by
 `skills check`, which rejects symlink crossings, directory escapes, and
 missing targets.
 
+## SkillOps Validation Scope
+
+Two boundaries of `skills check` and `skills eval` are deliberate decisions,
+not gaps:
+
+- **`agents/openai.yaml` is detected but its schema is not validated.**
+  `skills check` verifies the adapter file itself (regular file, not a
+  symlink, safe to read, valid UTF-8) and then reports
+  `codex-metadata-unparsed`; that warning is the specified behavior, not a
+  defect. Full schema validation would require a nested-YAML parser (maps two
+  levels deep plus lists of scalar maps) or a YAML dependency, which conflicts
+  with the dependency-free principle. Revisit a bundled limited parser only
+  when users actually author `openai.yaml` files and need validation. The
+  adapter schema facts are recorded in `reports/provider-review-2026-08.md`.
+- **Eval workspace snapshots copy `references/` only.** The snapshot copy is
+  UTF-8 text based (`read_text` / `write_text` with the same secret, binary,
+  size, and symlink exclusions as the inventory), which is what keeps the
+  secret and binary boundaries enforceable. Including `scripts/` would need
+  execute-permission preservation and `assets/` may contain binary data; both
+  require a byte-copy design with its own size caps before they can be
+  included. Expand the snapshot scope only when `skills eval --runner codex`
+  sees real use that needs it.
+
 ## Safety Model
 
 Inventory must skip:
