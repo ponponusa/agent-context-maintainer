@@ -229,7 +229,7 @@ LANG_EXTS = {
 }
 AGENTS_REF_RE = re.compile(r"`(\.agents/[^`\s)]+)`")
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
-PROVIDER_REGISTRY_REVIEWED = "2026-07-02"  # update together with reports/provider-review-*.md
+PROVIDER_REGISTRY_REVIEWED = "2026-08-04"  # update together with reports/provider-review-*.md
 MAX_SKILL_NAME_CHARS = 64
 SKILL_NAME_RE = re.compile(
     rf"^(?!.*--)[a-z0-9](?:[a-z0-9-]{{0,{MAX_SKILL_NAME_CHARS - 2}}}[a-z0-9])?$"

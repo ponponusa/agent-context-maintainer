@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — 2026-08-04
+
+### Changed
+
+- Provider registry review refreshed: `reports/provider-review-2026-08.md`
+  records the 2026-08-03 platform facts (custom subagent locations for four
+  providers, path-scoped instruction rules, skill listing budgets, the
+  `agents/openai.yaml` adapter schema, and the OpenAI docs URL migration), and
+  `PROVIDER_REGISTRY_REVIEWED` moves to `2026-08-04`. Generated output changes
+  only in the provider registry `reviewed:` line.
+
 ## Unreleased — 2026-07-02
 
 Platform-neutral redesign. The project is now a portable toolkit + agent skill

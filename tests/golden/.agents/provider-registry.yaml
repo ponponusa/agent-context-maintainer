@@ -1,6 +1,6 @@
 # agent-context-maintainer:begin
 schema_version: 1
-reviewed: "2026-07-02"
+reviewed: "2026-08-04"
 providers:
   codex:
     profile: ".agents/profiles/codex.md"
