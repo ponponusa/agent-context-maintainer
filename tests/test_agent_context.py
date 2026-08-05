@@ -1305,6 +1305,17 @@ class AgentContextTests(unittest.TestCase):
 
             self.assertTrue(any("danger-full-access" in str(call) for call in printed.call_args_list))
 
+    def test_generated_context_is_independent_of_checkout_directory_name(self) -> None:
+        outputs = []
+        for name in ("checkout-one", "checkout-two"):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp) / name
+                root.mkdir()
+                agent_context.scaffold(root, "generic")
+                outputs.append((root / ".agents" / "core.md").read_text(encoding="utf-8"))
+
+        self.assertEqual(outputs[0], outputs[1])
+
     def test_skill_routes_sync_is_noop_when_block_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

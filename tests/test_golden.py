@@ -1,9 +1,10 @@
 """Golden-file test pinning scaffold output byte-for-byte.
 
 The files under tests/golden/ were captured by running
-`scaffold <tmp>/golden-fixture --agent generic` on an empty fixture directory
-named `golden-fixture` (the name is embedded in generated content). Regenerate
-them the same way after any intentional template change.
+`scaffold <tmp>/golden-fixture --agent generic` on an empty fixture directory.
+Generated content does not embed the fixture directory name, so any directory
+name produces the same output. Regenerate them the same way after any
+intentional template change.
 """
 
 from __future__ import annotations
