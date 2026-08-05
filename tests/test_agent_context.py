@@ -1305,6 +1305,20 @@ class AgentContextTests(unittest.TestCase):
 
             self.assertTrue(any("danger-full-access" in str(call) for call in printed.call_args_list))
 
+    def test_skill_routes_sync_is_noop_when_block_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            first = agent_context.sync_skill_routes(root, agent_context.ScaffoldOptions())
+            self.assertTrue(first)
+            routing = root / ".agents" / "routing.md"
+            before = routing.read_text(encoding="utf-8")
+
+            second = agent_context.sync_skill_routes(root, agent_context.ScaffoldOptions())
+
+            self.assertEqual(second, [])
+            self.assertEqual(routing.read_text(encoding="utf-8"), before)
+
     def test_replace_generated_block_preserves_following_line_boundary(self) -> None:
         current = (
             f"{agent_context.BEGIN}\nold generated\n{agent_context.END}\n"

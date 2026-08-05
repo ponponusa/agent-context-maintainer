@@ -1569,7 +1569,10 @@ def sync_skill_routes(root: Path, options: ScaffoldOptions) -> List[Tuple[str, P
             raise AgentContextError(error)
         if generated_block_span(current, SKILL_ROUTE_MARKERS) is not None:
             updated = replace_generated_block(current, generated_block(skill_routes_body(root), SKILL_ROUTE_MARKERS), SKILL_ROUTE_MARKERS)
-            planned = PlannedWrite(path, updated, "updated-generated-block", should_snapshot_generated_update(root, path, current, SKILL_ROUTE_MARKERS))
+            if updated == current:
+                planned = PlannedWrite(path, updated, "unchanged", False, False)
+            else:
+                planned = PlannedWrite(path, updated, "updated-generated-block", should_snapshot_generated_update(root, path, current, SKILL_ROUTE_MARKERS))
         else:
             separator = "\n\n" if current.endswith("\n") else "\n\n"
             planned = PlannedWrite(path, current + separator + block, "appended-generated-block", False)
