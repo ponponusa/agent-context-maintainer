@@ -230,7 +230,10 @@ not gaps:
   execute-permission preservation and `assets/` may contain binary data; both
   require a byte-copy design with its own size caps before they can be
   included. Expand the snapshot scope only when `skills eval --runner codex`
-  sees real use that needs it.
+  sees real use that needs it. Skipping unreadable files applies only to
+  these optional reference files: `SKILL.md` itself is the evaluation target,
+  and workspace creation fails with an error when it is missing, a symlink,
+  or cannot be read as UTF-8.
 
 ## Safety Model
 

@@ -1,12 +1,13 @@
 # Changelog
 
-## Unreleased — 2026-08-04
+## Unreleased — 2026-08-05
 
 ### Added
 
 - `skills check` / `skills report` now verify the Codex skill adapter file
-  itself: a symlinked `agents/openai.yaml` warns `codex-metadata-symlink`, and
-  a non-regular, binary, oversized, or invalid-UTF-8 adapter warns
+  itself: a symlinked `agents/openai.yaml` (including a dangling symlink
+  whose target is missing) warns `codex-metadata-symlink`, and a non-regular,
+  binary, oversized, or invalid-UTF-8 adapter warns
   `codex-metadata-unreadable`. Readable adapters keep the existing
   `codex-metadata-unparsed` warning, and the adapter path stays recorded in
   the inventory and registry in all cases.
@@ -23,8 +24,12 @@
     budget is 2% of the context window. No always-on estimate line is added,
     so within-budget repositories see unchanged `skills report` /
     skill-health.md output; over-budget repositories gain the warning in both.
-- Eval workspace snapshots (`skills eval --init-workspace`) now skip files
-  that are not valid UTF-8 instead of crashing mid-copy.
+- Eval workspace snapshots (`skills eval --init-workspace`) now skip
+  optional `references/` files that are not valid UTF-8 instead of crashing
+  mid-copy. `SKILL.md` itself is required: workspace creation fails with an
+  error when the skill's `SKILL.md` is missing, a symlink, or cannot be read
+  as UTF-8, instead of reporting success with an empty snapshot or copying a
+  file from outside the skill directory through a symlink.
 
 ### Changed
 

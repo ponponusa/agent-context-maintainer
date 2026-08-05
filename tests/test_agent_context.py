@@ -622,6 +622,26 @@ class AgentContextTests(unittest.TestCase):
             self.assertNotIn("codex-metadata-unparsed", codes)
             self.assertIsNotNone(inv.skills[0].codex_metadata)
 
+    def test_codex_metadata_dangling_symlink_warns_and_keeps_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = self._write_skill(root)
+            (skill / "agents").mkdir()
+            try:
+                (skill / "agents" / "openai.yaml").symlink_to(root / "missing-openai.yaml")
+            except OSError:
+                self.skipTest("symlinks unavailable")
+
+            inv = agent_context.skill_inventory(root)
+            warnings, errors = agent_context.skill_inventory_diagnostics(inv)
+            codes = {item.code for item in warnings}
+
+            self.assertEqual(errors, [])
+            self.assertIn("codex-metadata-symlink", codes)
+            self.assertNotIn("codex-metadata-unreadable", codes)
+            self.assertNotIn("codex-metadata-unparsed", codes)
+            self.assertIsNotNone(inv.skills[0].codex_metadata)
+
     def test_codex_metadata_binary_file_warns_unreadable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -731,6 +751,44 @@ class AgentContextTests(unittest.TestCase):
             self.assertIn("SKILL.md", copied)
             self.assertIn("guide.md", copied)
             self.assertNotIn("bad.md", copied)
+
+    def test_eval_workspace_errors_on_unreadable_skill_md(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = self._write_skill(root)
+            (skill / "SKILL.md").write_bytes(b"\xff\xfe not utf-8")
+
+            with self.assertRaises(agent_context.AgentContextError):
+                agent_context.init_skill_workspace(root, "code-review")
+
+            self.assertFalse((root / ".agents" / "skill-workspaces").exists())
+
+    def test_eval_workspace_errors_on_missing_skill_md(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = self._write_skill(root)
+            (skill / "SKILL.md").unlink()
+
+            with self.assertRaises(agent_context.AgentContextError):
+                agent_context.init_skill_workspace(root, "code-review")
+
+            self.assertFalse((root / ".agents" / "skill-workspaces").exists())
+
+    def test_eval_workspace_errors_on_symlinked_skill_md(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = self._write_skill(root)
+            external = root / "external-skill.md"
+            (skill / "SKILL.md").rename(external)
+            try:
+                (skill / "SKILL.md").symlink_to(external)
+            except OSError:
+                self.skipTest("symlinks unavailable")
+
+            with self.assertRaises(agent_context.AgentContextError):
+                agent_context.init_skill_workspace(root, "code-review")
+
+            self.assertFalse((root / ".agents" / "skill-workspaces").exists())
 
     def test_missing_evals_warns_without_draft_or_top_level_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

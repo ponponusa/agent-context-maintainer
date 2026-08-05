@@ -229,7 +229,10 @@ local-reference 検証が対象とし、symlink 越え・ディレクトリ脱�
   強制可能にしています。`scripts/` を含めるには実行権限の保持が、`assets/` は
   バイナリデータを含み得るため、いずれもサイズ上限を備えた byte copy 設計が
   先に必要です。snapshot の範囲拡張は、`skills eval --runner codex` に実運用の
-  需要が出てから行います。
+  需要が出てから行います。読めないファイルの skip はこの任意の reference
+  ファイルに限られます。`SKILL.md` 自体は評価対象そのものであり、欠落している
+  場合、symlink である場合、UTF-8 として読めない場合、workspace 作成はエラーで
+  失敗します。
 
 ## Safety Model
 

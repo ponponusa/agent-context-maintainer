@@ -1153,7 +1153,8 @@ def validate_skill_directory(root: Path, skill_dir: Path) -> SkillInfo:
     if scripts and not compatibility:
         warnings.append(diag(rel_skill_md, "script-without-compatibility", "scripts exist but compatibility does not describe runtime requirements"))
     codex_metadata_path = skill_dir / "agents" / "openai.yaml"
-    codex_metadata = root_rel / "agents/openai.yaml" if codex_metadata_path.exists() else None
+    # exists() follows symlinks, so a dangling symlink needs the is_symlink() check first.
+    codex_metadata = root_rel / "agents/openai.yaml" if codex_metadata_path.is_symlink() or codex_metadata_path.exists() else None
     if codex_metadata is not None:
         # The inventory records that the adapter exists (the path stays in
         # codex_metadata) even when it cannot be read; the warnings below make
@@ -1632,17 +1633,23 @@ def init_skill_workspace(root: Path, skill_name: str) -> List[Tuple[str, Path]]:
     if not matches:
         raise AgentContextError(f"skill not found: {skill_name}")
     skill = matches[0]
+    # SKILL.md is the evaluation target; skipping unreadable files is only
+    # acceptable for the optional references below.
+    if skill.skill_md is None:
+        raise AgentContextError(f"skill has no SKILL.md to snapshot: {skill_name}")
+    source = root / skill.skill_md
+    if source.is_symlink():
+        raise AgentContextError(f"SKILL.md is a symlink and was not read: {rel_posix(skill.skill_md)}")
+    skill_md_text = read_utf8_text(source)
+    if skill_md_text is None:
+        raise AgentContextError(f"SKILL.md cannot be read as UTF-8: {rel_posix(skill.skill_md)}")
     workspace = next_workspace_iteration(root, skill_name)
     changes: List[Tuple[str, Path]] = []
     snapshot = workspace / "skill-snapshot"
     snapshot.mkdir(parents=True, exist_ok=True)
-    if skill.skill_md is not None:
-        source = root / skill.skill_md
-        text = read_utf8_text(source)
-        if text is not None:
-            target = snapshot / "SKILL.md"
-            target.write_text(text, encoding="utf-8")
-            changes.append(("created", target))
+    target = snapshot / "SKILL.md"
+    target.write_text(skill_md_text, encoding="utf-8")
+    changes.append(("created", target))
     for folder in ("references",):
         source_dir = root / skill.directory / folder
         if source_dir.is_dir() and not source_dir.is_symlink():
