@@ -60,7 +60,7 @@ The core is a single dependency-free Python script (`scripts/agent_context.py`, 
 
 **Humans** — run the CLI directly; see Quick Start.
 
-Installation paths were verified against the platform documentation on 2026-07-02; sources are recorded in `reports/provider-review-2026-07.md`.
+Installation paths were verified against the platform documentation on 2026-07-02 (`reports/provider-review-2026-07.md`). Native subagent locations, skill listing budgets, and the Codex adapter schema were verified on 2026-08-03 (`reports/provider-review-2026-08.md`).
 
 ## Quick Start
 
@@ -102,9 +102,9 @@ python3 scripts/agent_context.py skills eval /path/to/repo --skill code-review -
 python3 scripts/agent_context.py skills eval /path/to/repo --skill code-review --init-workspace
 ```
 
-`skills inventory` scans only direct child directories under `ROOT/.agents/skills/`, then validates the `SKILL.md` inside each one. It parses a safe dependency-free frontmatter subset, validates required Agent Skills fields, checks safe local references, validates `evals/evals.json` when present, and reports symlinked skill directories without following them. Missing evals are warnings only; valid skills default to `active`.
+`skills inventory` scans only direct child directories under `ROOT/.agents/skills/`, then validates the `SKILL.md` inside each one. It parses a safe dependency-free frontmatter subset, validates required Agent Skills fields, checks safe local references, validates `evals/evals.json` when present, and reports symlinked skill directories without following them. Missing evals are warnings only; valid skills default to `active`. It also verifies the Codex adapter file (`agents/openai.yaml`) without following symlinks, and warns when skill listings would exceed provider limits (Claude Code truncates each listing entry at 1,536 characters; the estimated Codex listing is checked against an 8,000-character fallback budget).
 
-`skills sync` writes `.agents/skill-registry.yaml` and `.agents/skill-reports/skill-health.md` with deterministic content and generated markers. It preserves human content outside managed blocks and refuses unmarked files by default. `skills routes` adds compact active/watch skill routes to `.agents/routing.md` without copying skill bodies. `skills eval --init-workspace` creates local planning workspaces under `.agents/skill-workspaces/`; it does not run Codex unless `--runner codex` is explicitly provided with a prompt and output path.
+`skills sync` writes `.agents/skill-registry.yaml` and `.agents/skill-reports/skill-health.md` with deterministic content and generated markers. It preserves human content outside managed blocks and refuses unmarked files by default. `skills routes` adds compact active/watch skill routes to `.agents/routing.md` without copying skill bodies. `skills eval --init-workspace` creates local planning workspaces under `.agents/skill-workspaces/`; it does not run Codex unless `--runner codex` is explicitly provided with a prompt and output path. Workspace snapshots require a readable, non-symlink `SKILL.md` and copy `references/` only.
 
 Codex eval execution uses `codex exec --json --sandbox ...` and writes JSONL trace output only under `.agents/skill-workspaces/`. Prefer `--sandbox read-only` or `--sandbox workspace-write`. `--sandbox danger-full-access` also requires `--i-understand-danger` and is suitable only for isolated CI/container environments. `--full-auto` is a deprecated legacy alias and should not be used for new automation.
 
@@ -136,7 +136,7 @@ Inventory skips sensitive directory components, symlinks, binary files, large fi
 - `examples/sample-output/`: a committed example of what `scaffold` generates (see `examples/HOWTO.md` for how it is regenerated).
 - `tests/`: unit tests plus golden files pinning generated output.
 - `references/`: contracts and guides for maintaining and extending the skill.
-- `reports/`: dated records of verified platform facts (installation paths, detection variables).
+- `reports/`: dated records of verified platform facts (installation paths, detection variables, subagent locations, listing budgets).
 
 ## Development
 

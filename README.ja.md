@@ -60,7 +60,7 @@ GEMINI.md
 
 **人間** — CLI を直接実行します。クイックスタートを参照してください。
 
-インストールパスは 2026-07-02 に各プラットフォームのドキュメントで検証済みです。出典は `reports/provider-review-2026-07.md` に記録されています。
+インストールパスは 2026-07-02 に各プラットフォームのドキュメントで検証済みです(`reports/provider-review-2026-07.md`)。ネイティブのサブエージェント配置、skill listing の予算、Codex アダプタのスキーマは 2026-08-03 に検証済みです(`reports/provider-review-2026-08.md`)。
 
 ## クイックスタート
 
@@ -102,9 +102,9 @@ python3 scripts/agent_context.py skills eval /path/to/repo --skill code-review -
 python3 scripts/agent_context.py skills eval /path/to/repo --skill code-review --init-workspace
 ```
 
-`skills inventory` は `ROOT/.agents/skills/` 直下の skill directory だけを列挙し、それぞれの中にある `SKILL.md` を検証します。依存ゼロの安全な frontmatter サブセットを parse し、Agent Skills の必須フィールド、安全な local reference、存在する場合は `evals/evals.json` を検証します。symlink された skill directory は追跡せず warning として報告します。eval 不在は warning のみで、valid skill の既定 lifecycle は `active` です。
+`skills inventory` は `ROOT/.agents/skills/` 直下の skill directory だけを列挙し、それぞれの中にある `SKILL.md` を検証します。依存ゼロの安全な frontmatter サブセットを parse し、Agent Skills の必須フィールド、安全な local reference、存在する場合は `evals/evals.json` を検証します。symlink された skill directory は追跡せず warning として報告します。eval 不在は warning のみで、valid skill の既定 lifecycle は `active` です。また、Codex アダプタファイル(`agents/openai.yaml`)自体も symlink を追跡せずに検証し、skill listing がプロバイダ上限を超えそうな場合に warning を出します(Claude Code は listing entry を 1,536 文字で切り詰め、Codex の listing 推定値は 8,000 文字の fallback 予算と比較されます)。
 
-`skills sync` は `.agents/skill-registry.yaml` と `.agents/skill-reports/skill-health.md` を deterministic な generated marker 付きファイルとして書きます。marker 外の手書き内容は維持し、marker のない既存ファイルはデフォルトで拒否します。`skills routes` は active/watch skill への短い route を `.agents/routing.md` に追加し、skill body はコピーしません。`skills eval --init-workspace` は `.agents/skill-workspaces/` に local planning workspace を作ります。`--runner codex` と prompt/output path を明示しない限り Codex は実行しません。
+`skills sync` は `.agents/skill-registry.yaml` と `.agents/skill-reports/skill-health.md` を deterministic な generated marker 付きファイルとして書きます。marker 外の手書き内容は維持し、marker のない既存ファイルはデフォルトで拒否します。`skills routes` は active/watch skill への短い route を `.agents/routing.md` に追加し、skill body はコピーしません。`skills eval --init-workspace` は `.agents/skill-workspaces/` に local planning workspace を作ります。`--runner codex` と prompt/output path を明示しない限り Codex は実行しません。workspace snapshot は symlink でない読み取り可能な `SKILL.md` を必須とし、コピー対象は `references/` のみです。
 
 Codex eval execution は `codex exec --json --sandbox ...` を使い、JSONL trace output は `.agents/skill-workspaces/` 以下にだけ保存します。通常は `--sandbox read-only` または `--sandbox workspace-write` を使ってください。`--sandbox danger-full-access` は追加で `--i-understand-danger` が必要で、隔離された CI/container 環境でのみ適しています。`--full-auto` は deprecated legacy alias であり、新しい automation では使わないでください。
 
@@ -136,7 +136,7 @@ inventory は sensitive directory component、symlink、binary file、巨大フ�
 - `examples/sample-output/`: `scaffold` の生成物のコミット済み実例(再生成手順は `examples/HOWTO.md`)。
 - `tests/`: ユニットテストと、生成物を固定するゴールデンファイル。
 - `references/`: skill 自体の保守・拡張のための契約とガイド。
-- `reports/`: 検証済みプラットフォーム事実(インストールパス、検出変数)の日付つき記録。
+- `reports/`: 検証済みプラットフォーム事実(インストールパス、検出変数、サブエージェント配置、listing 予算)の日付つき記録。
 
 ## 開発
 
