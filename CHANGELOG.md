@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.1.1 — 2026-08-05
+
+Idempotency and stability fixes for generated output. All three were
+first carried as downstream patches by a vendored installation and are
+now part of the tool itself.
+
+### Fixed
+
+- `replace_generated_block` no longer consumes the newline after the
+  end marker. Hand-written content that follows a managed block stays
+  on its own line, and a generated-only file keeps its final newline.
+  The committed sample-output `core.md` gains its final newline
+  accordingly.
+- `skills routes` treats an unchanged generated skill-route block as a
+  no-op instead of rewriting `.agents/routing.md` on every run.
+
+### Changed
+
+- **Generated output**: the `core.md` Repository Snapshot and the
+  `skill-health.md` summary no longer embed the checkout directory
+  basename (`Root:` line). The basename is not repository-stable, so
+  embedding it made generated files differ between clones of the same
+  repository and broke downstream CI drift checks. The next `scaffold`
+  / `skills sync` run removes the line once.
+
 ## 0.1.0 — 2026-08-05
 
 First tagged release. Nothing was tagged before this version, so the
