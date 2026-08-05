@@ -1,5 +1,56 @@
 # Changelog
 
+## Unreleased — 2026-08-05
+
+### Added
+
+- `skills check` / `skills report` now verify the Codex skill adapter file
+  itself: a symlinked `agents/openai.yaml` (including a dangling symlink
+  whose target is missing, or an `agents/` directory that is itself a
+  symlink) warns `codex-metadata-symlink` without following the link, and a
+  non-regular, binary, oversized, or invalid-UTF-8 adapter warns
+  `codex-metadata-unreadable`. Readable adapters keep the existing
+  `codex-metadata-unparsed` warning, and the adapter path stays recorded in
+  the inventory and registry in all cases.
+- Skill listing budget checks (warnings only, sourced from
+  `reports/provider-review-2026-08.md`):
+  - `long-listing-entry` — per skill, when combined `description` +
+    `when_to_use` exceed 1,536 characters (Claude Code truncates the listing
+    entry; the host-side limit is configurable via
+    `skillListingMaxDescChars`). `when_to_use` is now a typed
+    `SkillFrontmatter` field; skills without it are unaffected.
+  - `listing-budget-estimate` — across all valid skills, when the estimated
+    Codex listing (names + descriptions + paths) exceeds the 8,000-character
+    fallback budget. The message states it is a fallback estimate; the real
+    budget is 2% of the context window. No always-on estimate line is added,
+    so within-budget repositories see unchanged `skills report` /
+    skill-health.md output; over-budget repositories gain the warning in both.
+- Eval workspace snapshots (`skills eval --init-workspace`) now skip
+  optional `references/` files that are not valid UTF-8 instead of crashing
+  mid-copy. `SKILL.md` itself is required: workspace creation fails with an
+  error when the skill's `SKILL.md` is missing, a symlink, or cannot be read
+  as UTF-8, instead of reporting success with an empty snapshot or copying a
+  file from outside the skill directory through a symlink.
+
+### Changed
+
+- **Generated output**: the codex / claude / gemini / copilot profiles now
+  mention the provider's native custom subagent directory
+  (`.codex/agents/*.toml`, `.claude/agents/*.md`, `.gemini/agents/*.md`,
+  `.github/agents/*.agent.md`) with a "read before changing delegation
+  behavior" note, and the codex profile warns that `.codex/rules/` is an
+  exec-policy allowlist, not instructions. `.agents/routing.md` gains a
+  "Changing or adding custom subagent definitions" route, and the provider
+  registry gains one subagent documentation source URL per affected provider.
+  `AGENTS.md` stays provider-neutral, and no native directory is created or
+  existence-checked. The next `scaffold` run rewrites the managed blocks once.
+- Provider registry review refreshed: `reports/provider-review-2026-08.md`
+  records the 2026-08-03 platform facts (custom subagent locations for four
+  providers, path-scoped instruction rules, skill listing budgets, the
+  `agents/openai.yaml` adapter schema, and the OpenAI docs URL migration), and
+  `PROVIDER_REGISTRY_REVIEWED` moves to `2026-08-04`. Generated output changes
+  only in the provider registry `reviewed:` line.
+
 ## Unreleased — 2026-07-02
 
 Platform-neutral redesign. The project is now a portable toolkit + agent skill

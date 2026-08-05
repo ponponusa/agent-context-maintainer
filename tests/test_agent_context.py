@@ -579,6 +579,239 @@ class AgentContextTests(unittest.TestCase):
 
             self.assertIn("long-compatibility", {item.code for item in errors})
 
+    def test_codex_metadata_readable_adapter_warns_unparsed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = self._write_skill(root)
+            (skill / "agents").mkdir()
+            (skill / "agents" / "openai.yaml").write_text(
+                "interface:\n  display_name: Code Review\n", encoding="utf-8"
+            )
+
+            inv = agent_context.skill_inventory(root)
+            warnings, errors = agent_context.skill_inventory_diagnostics(inv)
+            codes = {item.code for item in warnings}
+
+            self.assertEqual(errors, [])
+            self.assertIn("codex-metadata-unparsed", codes)
+            self.assertNotIn("codex-metadata-symlink", codes)
+            self.assertNotIn("codex-metadata-unreadable", codes)
+            self.assertEqual(
+                agent_context.rel_posix(inv.skills[0].codex_metadata),
+                ".agents/skills/code-review/agents/openai.yaml",
+            )
+
+    def test_codex_metadata_symlink_warns_and_keeps_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = self._write_skill(root)
+            external = root / "external-openai.yaml"
+            external.write_text("interface: {}\n", encoding="utf-8")
+            (skill / "agents").mkdir()
+            try:
+                (skill / "agents" / "openai.yaml").symlink_to(external)
+            except OSError:
+                self.skipTest("symlinks unavailable")
+
+            inv = agent_context.skill_inventory(root)
+            warnings, errors = agent_context.skill_inventory_diagnostics(inv)
+            codes = {item.code for item in warnings}
+
+            self.assertEqual(errors, [])
+            self.assertIn("codex-metadata-symlink", codes)
+            self.assertNotIn("codex-metadata-unparsed", codes)
+            self.assertIsNotNone(inv.skills[0].codex_metadata)
+
+    def test_codex_metadata_symlinked_parent_dir_warns_and_keeps_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = self._write_skill(root)
+            external = root / "external-agents"
+            external.mkdir()
+            (external / "openai.yaml").write_text("interface: {}\n", encoding="utf-8")
+            try:
+                (skill / "agents").symlink_to(external)
+            except OSError:
+                self.skipTest("symlinks unavailable")
+
+            inv = agent_context.skill_inventory(root)
+            warnings, errors = agent_context.skill_inventory_diagnostics(inv)
+            codes = {item.code for item in warnings}
+
+            self.assertEqual(errors, [])
+            self.assertIn("codex-metadata-symlink", codes)
+            self.assertNotIn("codex-metadata-unreadable", codes)
+            self.assertNotIn("codex-metadata-unparsed", codes)
+            self.assertIsNotNone(inv.skills[0].codex_metadata)
+
+    def test_codex_metadata_dangling_symlink_warns_and_keeps_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = self._write_skill(root)
+            (skill / "agents").mkdir()
+            try:
+                (skill / "agents" / "openai.yaml").symlink_to(root / "missing-openai.yaml")
+            except OSError:
+                self.skipTest("symlinks unavailable")
+
+            inv = agent_context.skill_inventory(root)
+            warnings, errors = agent_context.skill_inventory_diagnostics(inv)
+            codes = {item.code for item in warnings}
+
+            self.assertEqual(errors, [])
+            self.assertIn("codex-metadata-symlink", codes)
+            self.assertNotIn("codex-metadata-unreadable", codes)
+            self.assertNotIn("codex-metadata-unparsed", codes)
+            self.assertIsNotNone(inv.skills[0].codex_metadata)
+
+    def test_codex_metadata_binary_file_warns_unreadable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = self._write_skill(root)
+            (skill / "agents").mkdir()
+            (skill / "agents" / "openai.yaml").write_bytes(b"interface\0binary")
+
+            inv = agent_context.skill_inventory(root)
+            warnings, errors = agent_context.skill_inventory_diagnostics(inv)
+            unreadable = [item for item in warnings if item.code == "codex-metadata-unreadable"]
+
+            self.assertEqual(errors, [])
+            self.assertEqual(len(unreadable), 1)
+            self.assertIn("binary-file", unreadable[0].message)
+            self.assertNotIn("codex-metadata-unparsed", {item.code for item in warnings})
+            self.assertIsNotNone(inv.skills[0].codex_metadata)
+
+    def test_codex_metadata_invalid_utf8_without_nul_warns_unreadable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = self._write_skill(root)
+            (skill / "agents").mkdir()
+            (skill / "agents" / "openai.yaml").write_bytes(b"interface: \xff\xfe\n")
+
+            inv = agent_context.skill_inventory(root)
+            warnings, errors = agent_context.skill_inventory_diagnostics(inv)
+            unreadable = [item for item in warnings if item.code == "codex-metadata-unreadable"]
+
+            self.assertEqual(errors, [])
+            self.assertEqual(len(unreadable), 1)
+            self.assertIn("UTF-8", unreadable[0].message)
+            self.assertNotIn("codex-metadata-unparsed", {item.code for item in warnings})
+            self.assertIsNotNone(inv.skills[0].codex_metadata)
+
+    def test_long_listing_entry_warns_on_combined_description_and_when_to_use(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            description = "Review code changes for correctness. Use when asked to review diffs. " + "x" * 900
+            self._write_skill(
+                root,
+                frontmatter=(
+                    "---\n"
+                    "name: code-review\n"
+                    f"description: {description}\n"
+                    "when_to_use: |\n"
+                    f"  {'y' * 600}\n"
+                    "---\n"
+                ),
+            )
+
+            inv = agent_context.skill_inventory(root)
+            warnings, errors = agent_context.skill_inventory_diagnostics(inv)
+            codes = {item.code for item in warnings}
+
+            self.assertEqual(errors, [])
+            self.assertIn("long-listing-entry", codes)
+            self.assertNotIn("listing-budget-estimate", codes)
+            self.assertEqual(inv.skills[0].frontmatter.when_to_use, "y" * 600)
+
+    def test_skill_without_when_to_use_has_no_listing_entry_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_skill(root)
+
+            warnings, errors = agent_context.skill_inventory_diagnostics(agent_context.skill_inventory(root))
+
+            self.assertEqual(errors, [])
+            self.assertNotIn("long-listing-entry", {item.code for item in warnings})
+
+    def test_listing_budget_estimate_warns_and_appears_in_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for index in range(9):
+                name = f"skill-{index}"
+                description = f"Handle repeated task {index}. Use when asked. " + "x" * 900
+                self._write_skill(
+                    root,
+                    name=name,
+                    frontmatter=(
+                        "---\n"
+                        f"name: {name}\n"
+                        f"description: {description}\n"
+                        "---\n"
+                    ),
+                )
+
+            inv = agent_context.skill_inventory(root)
+            warnings, errors = agent_context.skill_inventory_diagnostics(inv)
+            budget = [item for item in warnings if item.code == "listing-budget-estimate"]
+            report = agent_context.skill_report_body(inv)
+
+            self.assertEqual(errors, [])
+            self.assertEqual(len(budget), 1)
+            self.assertIn("fallback estimate", budget[0].message)
+            self.assertIn("2% of the context window", budget[0].message)
+            self.assertIn("listing-budget-estimate", report)
+
+    def test_eval_workspace_skips_invalid_utf8_references(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = self._write_skill(root)
+            (skill / "references" / "bad.md").write_bytes(b"\xff\xfe not utf-8")
+
+            changes = agent_context.init_skill_workspace(root, "code-review")
+
+            copied = [path.name for _action, path in changes]
+            self.assertIn("SKILL.md", copied)
+            self.assertIn("guide.md", copied)
+            self.assertNotIn("bad.md", copied)
+
+    def test_eval_workspace_errors_on_unreadable_skill_md(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = self._write_skill(root)
+            (skill / "SKILL.md").write_bytes(b"\xff\xfe not utf-8")
+
+            with self.assertRaises(agent_context.AgentContextError):
+                agent_context.init_skill_workspace(root, "code-review")
+
+            self.assertFalse((root / ".agents" / "skill-workspaces").exists())
+
+    def test_eval_workspace_errors_on_missing_skill_md(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = self._write_skill(root)
+            (skill / "SKILL.md").unlink()
+
+            with self.assertRaises(agent_context.AgentContextError):
+                agent_context.init_skill_workspace(root, "code-review")
+
+            self.assertFalse((root / ".agents" / "skill-workspaces").exists())
+
+    def test_eval_workspace_errors_on_symlinked_skill_md(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = self._write_skill(root)
+            external = root / "external-skill.md"
+            (skill / "SKILL.md").rename(external)
+            try:
+                (skill / "SKILL.md").symlink_to(external)
+            except OSError:
+                self.skipTest("symlinks unavailable")
+
+            with self.assertRaises(agent_context.AgentContextError):
+                agent_context.init_skill_workspace(root, "code-review")
+
+            self.assertFalse((root / ".agents" / "skill-workspaces").exists())
+
     def test_missing_evals_warns_without_draft_or_top_level_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
