@@ -3,7 +3,6 @@
 <!-- agent-context-maintainer:begin -->
 ## Repository Snapshot
 
-- Root: `sample-output`
 - Detected languages: Markdown
 - Approximate tracked context files scanned: 17
 

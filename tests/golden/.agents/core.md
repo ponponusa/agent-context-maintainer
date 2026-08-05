@@ -3,7 +3,6 @@
 <!-- agent-context-maintainer:begin -->
 ## Repository Snapshot
 
-- Root: `golden-fixture`
 - Detected languages: needs confirmation
 - Approximate tracked context files scanned: 0
 

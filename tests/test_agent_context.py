@@ -1305,6 +1305,116 @@ class AgentContextTests(unittest.TestCase):
 
             self.assertTrue(any("danger-full-access" in str(call) for call in printed.call_args_list))
 
+    def test_generated_context_is_independent_of_checkout_directory_name(self) -> None:
+        outputs = []
+        for name in ("checkout-one", "checkout-two"):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp) / name
+                root.mkdir()
+                agent_context.scaffold(root, "generic")
+                outputs.append((root / ".agents" / "core.md").read_text(encoding="utf-8"))
+
+        self.assertEqual(outputs[0], outputs[1])
+
+    def test_skill_routes_sync_is_noop_when_block_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            first = agent_context.sync_skill_routes(root, agent_context.ScaffoldOptions())
+            self.assertTrue(first)
+            routing = root / ".agents" / "routing.md"
+            before = routing.read_text(encoding="utf-8")
+
+            second = agent_context.sync_skill_routes(root, agent_context.ScaffoldOptions())
+
+            self.assertEqual(second, [])
+            self.assertEqual(routing.read_text(encoding="utf-8"), before)
+
+    def test_replace_generated_block_preserves_following_line_boundary(self) -> None:
+        current = (
+            f"{agent_context.BEGIN}\nold generated\n{agent_context.END}\n"
+            "## Hand-written heading\n"
+        )
+        generated = f"{agent_context.BEGIN}\nnew generated\n{agent_context.END}\n"
+
+        updated = agent_context.replace_generated_block(current, generated)
+
+        self.assertIn(f"{agent_context.END}\n## Hand-written heading", updated)
+        self.assertNotIn(f"{agent_context.END}## Hand-written heading", updated)
+
+    def test_replace_generated_block_preserves_blank_line_before_hand_written_content(self) -> None:
+        current = (
+            f"{agent_context.BEGIN}\nold generated\n{agent_context.END}\n"
+            "\n## Hand-written heading\n"
+        )
+        generated = f"{agent_context.BEGIN}\nnew generated\n{agent_context.END}\n"
+
+        updated = agent_context.replace_generated_block(current, generated)
+
+        self.assertEqual(
+            updated,
+            f"{agent_context.BEGIN}\nnew generated\n{agent_context.END}\n"
+            "\n## Hand-written heading\n",
+        )
+
+    def test_replace_generated_block_preserves_crlf_hand_written_suffix(self) -> None:
+        current = (
+            f"{agent_context.BEGIN}\r\nold generated\r\n{agent_context.END}\r\n"
+            "\r\n## Hand-written heading\r\n"
+        )
+        generated = f"{agent_context.BEGIN}\nnew generated\n{agent_context.END}\n"
+
+        updated = agent_context.replace_generated_block(current, generated)
+
+        self.assertEqual(
+            updated,
+            f"{agent_context.BEGIN}\nnew generated\n{agent_context.END}\n"
+            "\r\n## Hand-written heading\r\n",
+        )
+
+    def test_replace_generated_block_normalizes_missing_newline_at_eof(self) -> None:
+        current = f"{agent_context.BEGIN}\nold generated\n{agent_context.END}"
+        generated = f"{agent_context.BEGIN}\nnew generated\n{agent_context.END}"
+
+        updated = agent_context.replace_generated_block(current, generated)
+
+        self.assertEqual(updated, generated + "\n")
+
+    def test_replace_generated_block_preserves_multiple_blank_lines(self) -> None:
+        current = (
+            f"{agent_context.BEGIN}\nold generated\n{agent_context.END}\n"
+            "\n\n## Hand-written heading\n"
+        )
+        generated = f"{agent_context.BEGIN}\nnew generated\n{agent_context.END}\n"
+
+        updated = agent_context.replace_generated_block(current, generated)
+
+        self.assertEqual(
+            updated,
+            f"{agent_context.BEGIN}\nnew generated\n{agent_context.END}\n"
+            "\n\n## Hand-written heading\n",
+        )
+
+    def test_replace_generated_block_handles_generated_block_only(self) -> None:
+        current = f"{agent_context.BEGIN}\nold generated\n{agent_context.END}\n"
+        generated = f"{agent_context.BEGIN}\nnew generated\n{agent_context.END}\n"
+
+        updated = agent_context.replace_generated_block(current, generated)
+
+        self.assertEqual(updated, generated)
+
+    def test_replace_generated_block_is_idempotent(self) -> None:
+        current = (
+            f"{agent_context.BEGIN}\nold generated\n{agent_context.END}\n"
+            "\n## Hand-written heading\n"
+        )
+        generated = f"{agent_context.BEGIN}\nnew generated\n{agent_context.END}\n"
+
+        first = agent_context.replace_generated_block(current, generated)
+        second = agent_context.replace_generated_block(first, generated)
+
+        self.assertEqual(second, first)
+
 
 if __name__ == "__main__":
     unittest.main()

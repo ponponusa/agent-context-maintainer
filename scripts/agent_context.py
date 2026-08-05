@@ -1453,7 +1453,6 @@ def skill_report_body(inv: SkillInventory, reviewed_date: str = SKILL_REGISTRY_R
         "## Summary",
         "",
         f"- Source reviewed: {reviewed_date}",
-        f"- Root: `{sanitize_inline(inv.root.name)}`",
         f"- Skills scanned: {len(inv.skills)}",
         f"- Valid: {valid}",
         f"- Invalid: {invalid}",
@@ -1569,7 +1568,10 @@ def sync_skill_routes(root: Path, options: ScaffoldOptions) -> List[Tuple[str, P
             raise AgentContextError(error)
         if generated_block_span(current, SKILL_ROUTE_MARKERS) is not None:
             updated = replace_generated_block(current, generated_block(skill_routes_body(root), SKILL_ROUTE_MARKERS), SKILL_ROUTE_MARKERS)
-            planned = PlannedWrite(path, updated, "updated-generated-block", should_snapshot_generated_update(root, path, current, SKILL_ROUTE_MARKERS))
+            if updated == current:
+                planned = PlannedWrite(path, updated, "unchanged", False, False)
+            else:
+                planned = PlannedWrite(path, updated, "updated-generated-block", should_snapshot_generated_update(root, path, current, SKILL_ROUTE_MARKERS))
         else:
             separator = "\n\n" if current.endswith("\n") else "\n\n"
             planned = PlannedWrite(path, current + separator + block, "appended-generated-block", False)
@@ -1882,7 +1884,9 @@ def replace_generated_block(
     if span is None:
         raise AgentContextError("current content has no valid generated block")
     replacement = generated_block_from_content(generated_content, markers).rstrip()
-    return current[: span.begin_start] + replacement + current[span.end_end :]
+    suffix = current[span.end_end :]
+    replacement += "\n"
+    return current[: span.begin_start] + replacement + suffix
 
 
 def append_generated_block(
@@ -2199,7 +2203,6 @@ def core_body(inv: dict[str, object]) -> str:
     return f"""
     ## Repository Snapshot
 
-    - Root: `{inv["root_name"]}`
     - Detected languages: {languages}
     - Approximate tracked context files scanned: {inv["file_count"]}
 
