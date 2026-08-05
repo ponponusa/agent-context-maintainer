@@ -622,6 +622,28 @@ class AgentContextTests(unittest.TestCase):
             self.assertNotIn("codex-metadata-unparsed", codes)
             self.assertIsNotNone(inv.skills[0].codex_metadata)
 
+    def test_codex_metadata_symlinked_parent_dir_warns_and_keeps_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = self._write_skill(root)
+            external = root / "external-agents"
+            external.mkdir()
+            (external / "openai.yaml").write_text("interface: {}\n", encoding="utf-8")
+            try:
+                (skill / "agents").symlink_to(external)
+            except OSError:
+                self.skipTest("symlinks unavailable")
+
+            inv = agent_context.skill_inventory(root)
+            warnings, errors = agent_context.skill_inventory_diagnostics(inv)
+            codes = {item.code for item in warnings}
+
+            self.assertEqual(errors, [])
+            self.assertIn("codex-metadata-symlink", codes)
+            self.assertNotIn("codex-metadata-unreadable", codes)
+            self.assertNotIn("codex-metadata-unparsed", codes)
+            self.assertIsNotNone(inv.skills[0].codex_metadata)
+
     def test_codex_metadata_dangling_symlink_warns_and_keeps_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

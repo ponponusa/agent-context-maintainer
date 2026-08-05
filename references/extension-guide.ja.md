@@ -215,8 +215,9 @@ local-reference 検証が対象とし、symlink 越え・ディレクトリ脱�
 意図した決定です。
 
 - **`agents/openai.yaml` は検出するが、スキーマは検証しません。**
-  `skills check` は adapter ファイル自体(通常ファイルであること、symlink で
-  ないこと、安全に読めること、UTF-8 として妥当であること)を検証したうえで
+  `skills check` は adapter ファイル自体(通常ファイルであること、symlink でも
+  symlink されたディレクトリの配下でもないこと、安全に読めること、UTF-8 として
+  妥当であること)を検証したうえで
   `codex-metadata-unparsed` を報告します。この warning は仕様であり、欠陥では
   ありません。完全なスキーマ検証にはネストした YAML パーサ(2 階層までの map +
   scalar map の list)か YAML 依存の追加が必要で、dependency-free 原則と衝突

@@ -215,8 +215,9 @@ Two boundaries of `skills check` and `skills eval` are deliberate decisions,
 not gaps:
 
 - **`agents/openai.yaml` is detected but its schema is not validated.**
-  `skills check` verifies the adapter file itself (regular file, not a
-  symlink, safe to read, valid UTF-8) and then reports
+  `skills check` verifies the adapter file itself (regular file, neither a
+  symlink nor behind a symlinked directory, safe to read, valid UTF-8) and
+  then reports
   `codex-metadata-unparsed`; that warning is the specified behavior, not a
   defect. Full schema validation would require a nested-YAML parser (maps two
   levels deep plus lists of scalar maps) or a YAML dependency, which conflicts

@@ -6,8 +6,9 @@
 
 - `skills check` / `skills report` now verify the Codex skill adapter file
   itself: a symlinked `agents/openai.yaml` (including a dangling symlink
-  whose target is missing) warns `codex-metadata-symlink`, and a non-regular,
-  binary, oversized, or invalid-UTF-8 adapter warns
+  whose target is missing, or an `agents/` directory that is itself a
+  symlink) warns `codex-metadata-symlink` without following the link, and a
+  non-regular, binary, oversized, or invalid-UTF-8 adapter warns
   `codex-metadata-unreadable`. Readable adapters keep the existing
   `codex-metadata-unparsed` warning, and the adapter path stays recorded in
   the inventory and registry in all cases.

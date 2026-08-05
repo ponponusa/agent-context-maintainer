@@ -1153,14 +1153,17 @@ def validate_skill_directory(root: Path, skill_dir: Path) -> SkillInfo:
     if scripts and not compatibility:
         warnings.append(diag(rel_skill_md, "script-without-compatibility", "scripts exist but compatibility does not describe runtime requirements"))
     codex_metadata_path = skill_dir / "agents" / "openai.yaml"
-    # exists() follows symlinks, so a dangling symlink needs the is_symlink() check first.
-    codex_metadata = root_rel / "agents/openai.yaml" if codex_metadata_path.is_symlink() or codex_metadata_path.exists() else None
+    # exists() follows symlinks — including a symlinked agents/ parent directory —
+    # so the component-wise symlink check must come first to catch dangling links
+    # and parent links before any read attempt.
+    adapter_symlinked = has_symlink_component(skill_dir, Path("agents/openai.yaml"))
+    codex_metadata = root_rel / "agents/openai.yaml" if adapter_symlinked or codex_metadata_path.exists() else None
     if codex_metadata is not None:
         # The inventory records that the adapter exists (the path stays in
         # codex_metadata) even when it cannot be read; the warnings below make
         # the unreadable cases explicit instead of hiding them.
-        if codex_metadata_path.is_symlink():
-            warnings.append(diag(codex_metadata, "codex-metadata-symlink", "agents/openai.yaml is a symlink and was not read"))
+        if adapter_symlinked:
+            warnings.append(diag(codex_metadata, "codex-metadata-symlink", "agents/openai.yaml is a symlink or behind a symlinked directory and was not read"))
         else:
             skip = skip_file_reason(codex_metadata_path, codex_metadata)
             if skip:
