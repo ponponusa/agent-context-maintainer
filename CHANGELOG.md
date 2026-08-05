@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased — 2026-08-05
+## 0.1.0 — 2026-08-05
+
+First tagged release. Nothing was tagged before this version, so the
+2026-07-02 section below is also part of 0.1.0.
 
 ### Added
 
@@ -51,7 +54,7 @@
   `PROVIDER_REGISTRY_REVIEWED` moves to `2026-08-04`. Generated output changes
   only in the provider registry `reviewed:` line.
 
-## Unreleased — 2026-07-02
+## 2026-07-02 (included in 0.1.0)
 
 Platform-neutral redesign. The project is now a portable toolkit + agent skill
 rather than a Codex-only skill. Markers, generated file paths, existing CLI
