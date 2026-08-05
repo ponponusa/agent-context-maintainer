@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# Local development documents (plans, investigations, reports) — not published
+.docs/
