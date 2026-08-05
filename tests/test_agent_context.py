@@ -1305,6 +1305,27 @@ class AgentContextTests(unittest.TestCase):
 
             self.assertTrue(any("danger-full-access" in str(call) for call in printed.call_args_list))
 
+    def test_replace_generated_block_preserves_following_line_boundary(self) -> None:
+        current = (
+            f"{agent_context.BEGIN}\nold generated\n{agent_context.END}\n"
+            "## Hand-written heading\n"
+        )
+        generated = f"{agent_context.BEGIN}\nnew generated\n{agent_context.END}\n"
+
+        updated = agent_context.replace_generated_block(current, generated)
+
+        self.assertIn(f"{agent_context.END}\n## Hand-written heading", updated)
+        self.assertNotIn(f"{agent_context.END}## Hand-written heading", updated)
+
+    def test_replace_generated_block_keeps_final_newline_at_eof(self) -> None:
+        current = f"{agent_context.BEGIN}\nold generated\n{agent_context.END}\n"
+        generated = f"{agent_context.BEGIN}\nnew generated\n{agent_context.END}\n"
+
+        updated = agent_context.replace_generated_block(current, generated)
+
+        self.assertIn("new generated", updated)
+        self.assertTrue(updated.endswith(f"{agent_context.END}\n"))
+
 
 if __name__ == "__main__":
     unittest.main()

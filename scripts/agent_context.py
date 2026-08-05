@@ -1882,7 +1882,12 @@ def replace_generated_block(
     if span is None:
         raise AgentContextError("current content has no valid generated block")
     replacement = generated_block_from_content(generated_content, markers).rstrip()
-    return current[: span.begin_start] + replacement + current[span.end_end :]
+    suffix = current[span.end_end :]
+    if not suffix:
+        replacement += "\n"
+    elif not suffix.startswith(("\n", "\r")):
+        replacement += "\n"
+    return current[: span.begin_start] + replacement + suffix
 
 
 def append_generated_block(
